@@ -9,7 +9,7 @@ use ark_bls12_377::{G1Affine, G2Affine};
 #[cfg(feature = "bls12_381")]
 use ark_bls12_381::{G1Affine, G2Affine};
 #[cfg(feature = "bn254")]
-use ark_bn254::G1Affine;
+use ark_bn254::{G1Affine, G2Affine};
 use ark_ff::BigInteger256;
 
 use std::str::FromStr;
@@ -40,10 +40,35 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(not(any(feature = "bls12_381", feature = "bls12_377")))]
-criterion_group!(benches, criterion_benchmark);
+fn criterion_benchmark_preloaded(c: &mut Criterion) {
+    let bench_npow = std::env::var("BENCH_NPOW").unwrap_or("23".to_string());
+    let npoints_npow = i32::from_str(&bench_npow).unwrap();
 
-#[cfg(any(feature = "bls12_381", feature = "bls12_377"))]
+    let (points, scalars) =
+        util::generate_points_scalars::<G1Affine>(1usize << npoints_npow);
+
+    // Pre-load points to GPU (one-time cost, not benchmarked)
+    let msm = PreloadedMsm::init_g1(&points);
+
+    let mut group = c.benchmark_group("CUDA-preloaded");
+    group.sample_size(20);
+
+    let name = format!("2**{}", npoints_npow);
+    group.bench_function(name, |b| {
+        b.iter(|| {
+            let _ = msm.invoke_g1(unsafe {
+                std::mem::transmute::<&[_], &[BigInteger256]>(
+                    scalars.as_slice(),
+                )
+            });
+        })
+    });
+
+    group.finish();
+    drop(msm);
+}
+
+#[cfg(any(feature = "bls12_381", feature = "bls12_377", feature = "bn254"))]
 fn criterion_benchmark_fp2(c: &mut Criterion) {
     let bench_npow = std::env::var("BENCH_NPOW").unwrap_or("23".to_string());
     let npoints_npow = i32::from_str(&bench_npow).unwrap();
@@ -68,7 +93,40 @@ fn criterion_benchmark_fp2(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(any(feature = "bls12_381", feature = "bls12_377"))]
-criterion_group!(benches, criterion_benchmark, criterion_benchmark_fp2);
+#[cfg(any(feature = "bls12_381", feature = "bls12_377", feature = "bn254"))]
+fn criterion_benchmark_fp2_preloaded(c: &mut Criterion) {
+    let bench_npow = std::env::var("BENCH_NPOW").unwrap_or("23".to_string());
+    let npoints_npow = i32::from_str(&bench_npow).unwrap();
+
+    let (points, scalars) =
+        util::generate_points_scalars::<G2Affine>(1usize << npoints_npow);
+
+    // Pre-load points to GPU (one-time cost, not benchmarked)
+    let msm = PreloadedMsm::init_g2(&points);
+
+    let mut group = c.benchmark_group("CUDA-preloaded");
+    group.sample_size(10);
+
+    let name = format!("2**{}", npoints_npow);
+    group.bench_function(name, |b| {
+        b.iter(|| {
+            let _ = msm.invoke_g2(unsafe {
+                std::mem::transmute::<&[_], &[BigInteger256]>(
+                    scalars.as_slice(),
+                )
+            });
+        })
+    });
+
+    group.finish();
+    drop(msm);
+}
+
+#[cfg(not(any(feature = "bls12_381", feature = "bls12_377", feature = "bn254")))]
+criterion_group!(benches, criterion_benchmark, criterion_benchmark_preloaded);
+
+#[cfg(any(feature = "bls12_381", feature = "bls12_377", feature = "bn254"))]
+criterion_group!(benches, criterion_benchmark, criterion_benchmark_preloaded,
+                 criterion_benchmark_fp2, criterion_benchmark_fp2_preloaded);
 
 criterion_main!(benches);

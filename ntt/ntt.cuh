@@ -77,7 +77,9 @@ protected:
 private:
     static void LDE_powers(fr_t* inout, bool innt, bool bitrev,
                            uint32_t lg_dsz, uint32_t lg_blowup,
-                           stream_t& stream)
+                           stream_t& stream,
+                           unsigned int batch_count = 1,
+                           unsigned int col_stride = 0)
     {
         size_t domain_size = (size_t)1 << lg_dsz;
         const uint32_t warpSize = gpu_props(stream).warpSize;
@@ -85,23 +87,26 @@ private:
             NTTParameters::all(innt)[stream].partial_group_gen_powers;
 
         if (domain_size < warpSize)
-            LDE_distribute_powers<<<1, domain_size, 0, stream>>>
-                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers);
+            LDE_distribute_powers<<<dim3(1, batch_count), domain_size, 0, stream>>>
+                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers, col_stride);
         else if (lg_dsz < 32)
-            LDE_distribute_powers<<<domain_size / warpSize, warpSize, 0, stream>>>
-                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers);
+            LDE_distribute_powers<<<dim3(domain_size / warpSize, batch_count), warpSize, 0, stream>>>
+                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers, col_stride);
         else
-            LDE_distribute_powers<<<stream.sm_count(), 1024, 0, stream>>>
-                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers);
+            LDE_distribute_powers<<<dim3(stream.sm_count(), batch_count), 1024, 0, stream>>>
+                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers, col_stride);
 
         CUDA_OK(cudaGetLastError());
     }
 
     static void CT_NTT(fr_t* d_inout, const int lg_domain_size, bool intt,
                        const NTTParameters& ntt_parameters,
-                       const stream_t& stream)
+                       const stream_t& stream,
+                       unsigned int batch_count = 1,
+                       unsigned int col_stride = 0)
     {
-        CT_launcher params{d_inout, lg_domain_size, intt, ntt_parameters, stream};
+        CT_launcher params{d_inout, lg_domain_size, intt, ntt_parameters, stream,
+                           batch_count, col_stride};
 
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
@@ -129,9 +134,12 @@ private:
 
     static void GS_NTT(fr_t* d_inout, const int lg_domain_size, const bool is_intt,
                        const NTTParameters& ntt_parameters,
-                       const stream_t& stream)
+                       const stream_t& stream,
+                       unsigned int batch_count = 1,
+                       unsigned int col_stride = 0)
     {
-        GS_launcher params{d_inout, lg_domain_size, is_intt, ntt_parameters, stream};
+        GS_launcher params{d_inout, lg_domain_size, is_intt, ntt_parameters, stream,
+                           batch_count, col_stride};
 
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
@@ -160,7 +168,9 @@ private:
 protected:
     static void NTT_internal(fr_t* d_inout, uint32_t lg_domain_size,
                              InputOutputOrder order, Direction direction,
-                             Type type, stream_t& stream)
+                             Type type, stream_t& stream,
+                             unsigned int batch_count = 1,
+                             unsigned int col_stride = 0)
     {
         // Pick an NTT algorithm based on the input order and the desired output
         // order of the data. In certain cases, bit reversal can be avoided which
@@ -194,19 +204,23 @@ protected:
         }
 
         if (!intt && type == Type::coset)
-            LDE_powers(d_inout, intt, bitrev, lg_domain_size, 0, stream);
+            LDE_powers(d_inout, intt, bitrev, lg_domain_size, 0, stream,
+                       batch_count, col_stride);
 
         switch (algorithm) {
             case Algorithm::GS:
-                GS_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream);
+                GS_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream,
+                        batch_count, col_stride);
                 break;
             case Algorithm::CT:
-                CT_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream);
+                CT_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream,
+                        batch_count, col_stride);
                 break;
         }
 
         if (intt && type == Type::coset)
-            LDE_powers(d_inout, intt, !bitrev, lg_domain_size, 0, stream);
+            LDE_powers(d_inout, intt, !bitrev, lg_domain_size, 0, stream,
+                       batch_count, col_stride);
 
         if (order == InputOutputOrder::RR)
             bit_rev(d_inout, d_inout, lg_domain_size, stream);
@@ -224,6 +238,12 @@ public:
             gpu.select();
 
             size_t domain_size = (size_t)1 << lg_domain_size;
+
+            // Pin host memory for faster PCIe transfers (best-effort)
+            size_t bytes = domain_size * sizeof(fr_t);
+            bool pinned = (cudaHostRegister(inout, bytes,
+                                            cudaHostRegisterDefault) == cudaSuccess);
+
             dev_ptr_t<fr_t> d_inout{domain_size, gpu};
             gpu.HtoD(&d_inout[0], inout, domain_size);
 
@@ -231,6 +251,9 @@ public:
 
             gpu.DtoH(inout, &d_inout[0], domain_size);
             gpu.sync();
+
+            if (pinned)
+                cudaHostUnregister(inout);
         } catch (const cuda_error& e) {
             gpu.sync();
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
@@ -272,11 +295,17 @@ protected:
             block_size = 1024;
         }
 
-        stream.launch_coop(LDE_spread_distribute_powers,
-                        {dim3(num_blocks), dim3(block_size),
-                         sizeof(fr_t) * block_size},
-                        ext_domain_data, domain_data, gen_powers,
-                        lg_domain_size, lg_blowup, perform_shift, ext_pow);
+        size_t shared_sz = sizeof(fr_t) * block_size;
+#ifdef __NVCC__
+        if (gpu_props(stream).sharedMemPerBlock < shared_sz)
+            CUDA_OK(cudaFuncSetAttribute(
+                LDE_spread_distribute_powers<fr_t>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize, shared_sz));
+#endif
+        LDE_spread_distribute_powers<<<num_blocks, block_size,
+                                       shared_sz, stream>>>
+            (ext_domain_data, domain_data, gen_powers,
+             lg_domain_size, lg_blowup, perform_shift, ext_pow);
     }
 
 public:
@@ -288,6 +317,18 @@ public:
             size_t domain_size = (size_t)1 << lg_domain_size;
             size_t ext_domain_size = domain_size << lg_blowup;
             size_t aux_size = aux_out != nullptr ? domain_size : 0;
+
+            // Pin host memory for faster PCIe transfers (best-effort)
+            size_t inout_bytes = ext_domain_size * sizeof(fr_t);
+            bool pinned = (cudaHostRegister(inout, inout_bytes,
+                                            cudaHostRegisterDefault) == cudaSuccess);
+            bool aux_pinned = false;
+            if (aux_out != nullptr) {
+                size_t aux_bytes = domain_size * sizeof(fr_t);
+                aux_pinned = (cudaHostRegister(aux_out, aux_bytes,
+                                               cudaHostRegisterDefault) == cudaSuccess);
+            }
+
             // The 2nd to last 'domain_size' chunk will hold the original data
             // The last chunk will get the bit reversed iNTT data
             dev_ptr_t<fr_t> d_inout{ext_domain_size + aux_size, gpu}; // + domain_size for aux buffer
@@ -325,6 +366,11 @@ public:
             }
             gpu.DtoH(inout, ext_domain_data, ext_domain_size);
             gpu.sync();
+
+            if (pinned)
+                cudaHostUnregister(inout);
+            if (aux_pinned)
+                cudaHostUnregister(aux_out);
         } catch (const cuda_error& e) {
             gpu.sync();
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
@@ -349,10 +395,28 @@ public:
                      stream);
     }
 
+    static void Base_dev_ptr_batch(stream_t& stream, fr_t* d_inout,
+                                   uint32_t lg_domain_size,
+                                   InputOutputOrder order,
+                                   Direction direction, Type type,
+                                   uint32_t poly_count, uint32_t col_stride)
+    {
+        NTT_internal(&d_inout[0], lg_domain_size, order, direction, type,
+                     stream, poly_count, col_stride);
+    }
+
     static void LDE_powers(stream_t& stream, fr_t* d_inout,
                            uint32_t lg_domain_size)
     {
         LDE_powers(d_inout, false, true, lg_domain_size, 0, stream);
+    }
+
+    static void LDE_powers_batch(stream_t& stream, fr_t* d_inout,
+                                 uint32_t lg_domain_size,
+                                 uint32_t poly_count, uint32_t col_stride)
+    {
+        LDE_powers(d_inout, false, true, lg_domain_size, 0, stream,
+                   poly_count, col_stride);
     }
 
     // If d_out and d_in overlap, d_out is expected to encompass d_in and
@@ -363,5 +427,9 @@ public:
     {
         LDE_launch(stream, d_out, d_in, NULL, lg_domain_size, lg_blowup, false);
     }
+
+    static void bit_rev_dev_ptr(stream_t& stream, fr_t* d_inout,
+                                uint32_t lg_domain_size)
+    {   bit_rev(d_inout, d_inout, lg_domain_size, stream);   }
 };
 #endif

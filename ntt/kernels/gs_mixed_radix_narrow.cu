@@ -9,7 +9,8 @@ void _GS_NTT(const unsigned int radix, const unsigned int lg_domain_size,
              fr_t* d_inout, const fr_t (*d_partial_twiddles)[WINDOW_SIZE],
              const fr_t (*d_plus_one_twiddles)[1024],
              const fr_t* d_radix6_twiddles, const fr_t* d_radixX_twiddles,
-             bool is_intt, const fr_t d_domain_size_inverse)
+             bool is_intt, const fr_t d_domain_size_inverse,
+             const unsigned int col_stride = 0)
 {
 #if (__CUDACC_VER_MAJOR__-0) >= 11 || defined(__clang__)
     __builtin_assume(lg_domain_size <= MAX_LG_DOMAIN_SIZE);
@@ -17,6 +18,7 @@ void _GS_NTT(const unsigned int radix, const unsigned int lg_domain_size,
     __builtin_assume(iterations <= radix);
     __builtin_assume(stage <= lg_domain_size && stage >= iterations);
 #endif
+    if (col_stride) d_inout += (index_t)blockIdx.y * col_stride;
     extern __shared__ fr_t shared_exchange[];
 
     index_t tid = threadIdx.x + blockDim.x * (index_t)blockIdx.x;
@@ -192,12 +194,15 @@ class GS_launcher {
     int stage;
     const NTTParameters& ntt_parameters;
     const stream_t& stream;
+    unsigned int batch_count;
+    unsigned int col_stride;
 
 public:
     GS_launcher(fr_t* d_ptr, int lg_dsz, bool intt,
-                const NTTParameters& params, const stream_t& s)
+                const NTTParameters& params, const stream_t& s,
+                unsigned int batch = 1, unsigned int stride = 0)
       : d_inout(d_ptr), lg_domain_size(lg_dsz), is_intt(intt), stage(lg_dsz),
-        ntt_parameters(params), stream(s)
+        ntt_parameters(params), stream(s), batch_count(batch), col_stride(stride)
     {}
 
     void step(int iterations)
@@ -222,14 +227,14 @@ public:
                 d_inout, ntt_parameters.partial_twiddles, \
                 ntt_parameters.plus_one_twiddles, \
                 ntt_parameters.twiddles[0], ntt_parameters.twiddles[radix-6], \
-                is_intt, domain_size_inverse[lg_domain_size]
+                is_intt, domain_size_inverse[lg_domain_size], col_stride
 
         if (num_blocks < Z_COUNT)
-            _GS_NTT<1><<<num_blocks, block_size, shared_sz, stream>>>(NTT_ARGUMENTS);
+            _GS_NTT<1><<<dim3(num_blocks, batch_count), block_size, shared_sz, stream>>>(NTT_ARGUMENTS);
         else if (stage == iterations || lg_domain_size < 12)
-            _GS_NTT<Z_COUNT><<<num_blocks/Z_COUNT, block_size, Z_COUNT*shared_sz, stream>>>(NTT_ARGUMENTS);
+            _GS_NTT<Z_COUNT><<<dim3(num_blocks/Z_COUNT, batch_count), block_size, Z_COUNT*shared_sz, stream>>>(NTT_ARGUMENTS);
         else
-            _GS_NTT<Z_COUNT, true><<<num_blocks/Z_COUNT, block_size, Z_COUNT*shared_sz, stream>>>(NTT_ARGUMENTS);
+            _GS_NTT<Z_COUNT, true><<<dim3(num_blocks/Z_COUNT, batch_count), block_size, Z_COUNT*shared_sz, stream>>>(NTT_ARGUMENTS);
 
         #undef NTT_ARGUMENTS
 

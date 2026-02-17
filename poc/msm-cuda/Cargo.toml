@@ -22,7 +22,7 @@ cuda-mobile = []
 
 [dependencies]
 blst = "~0.3.11"
-sppark = { path = "../../rust" }
+sppark = { package = "risc0-sppark", path = "../../rust" }
 rand = "0.8"
 rand_chacha = "0.3"
 ark-std = "0.3.0"

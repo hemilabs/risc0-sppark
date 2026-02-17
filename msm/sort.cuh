@@ -20,7 +20,9 @@
 __launch_bounds__(SORT_BLOCKDIM)
 __global__ void sort(vec2d_t<uint32_t> inouts, size_t len, uint32_t win,
                      vec2d_t<uint2> temps, vec2d_t<uint32_t> histograms,
-                     uint32_t wbits, uint32_t lsbits0, uint32_t lsbits1);
+                     uint32_t wbits, uint32_t lsbits0, uint32_t lsbits1,
+                     uint32_t* sync_data = nullptr,
+                     uint32_t last_lsbits = 0xFFFFFFFF);
 
 #ifndef __MSM_SORT_DONT_IMPLEMENT__
 
@@ -36,6 +38,32 @@ __global__ void sort(vec2d_t<uint32_t> inouts, size_t len, uint32_t win,
 static const uint32_t N_COUNTERS = 1<<DIGIT_BITS;
 static const uint32_t N_SUMS = N_COUNTERS / SORT_BLOCKDIM;
 extern __shared__ uint32_t counters[/*N_COUNTERS*/];
+
+// Atomic grid barrier using sense-reversal protocol.
+// Each blockIdx.y group synchronizes independently.
+// sync_data layout: [arrive_counter_0, sense_0, arrive_counter_1, sense_1, ...]
+__device__ __forceinline__
+void grid_sync_atomic(uint32_t* sync_data, uint32_t num_blocks_x)
+{
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        uint32_t* arrive = &sync_data[blockIdx.y * 2];
+        volatile uint32_t* sense = (volatile uint32_t*)&sync_data[blockIdx.y * 2 + 1];
+
+        uint32_t old_sense = *sense;
+        __threadfence();
+        uint32_t val = atomicAdd(arrive, 1);
+        if (val == num_blocks_x - 1) {
+            *arrive = 0;
+            __threadfence();
+            atomicExch((uint32_t*)sense, 1 - old_sense);
+        } else {
+            while (*sense == old_sense)
+                ;
+        }
+    }
+    __syncthreads();
+}
 
 __device__ __forceinline__
 uint32_t pack(uint32_t a, uint32_t mask, uint32_t b)
@@ -120,7 +148,7 @@ void scatter(uint2 dst[], const uint32_t src[], uint32_t base, uint32_t len,
 __device__
 static void upper_sort(uint2 dst[], const uint32_t src[], uint32_t len,
                        uint32_t lsbits, uint32_t bits, uint32_t digit,
-                       uint32_t histogram[])
+                       uint32_t histogram[], uint32_t* sync_data)
 {
     uint32_t grid_div = 31 - __clz(gridDim.x);
     uint32_t grid_rem = (1<<grid_div) - 1;
@@ -144,8 +172,7 @@ static void upper_sort(uint2 dst[], const uint32_t src[], uint32_t len,
     for (uint32_t i = threadIdx.x; i < 1<<bits; i += SORT_BLOCKDIM)
         histogram[2 + (i<<digit) + blockIdx.x] = counters[i];
 
-    cooperative_groups::this_grid().sync();
-    __syncthreads();    // eliminate BRA.DIV?
+    grid_sync_atomic(sync_data, gridDim.x);
 
     const uint32_t warpid = threadIdx.x / WARP_SZ;
     const uint32_t laneid = threadIdx.x % WARP_SZ;
@@ -218,8 +245,7 @@ static void upper_sort(uint2 dst[], const uint32_t src[], uint32_t len,
                 (void)atomicAdd(&histogram[lane_off << digit], carry_sum);
     }
 
-    cooperative_groups::this_grid().sync();
-    __syncthreads();
+    grid_sync_atomic(sync_data, gridDim.x);
 }
 
 __device__ __forceinline__
@@ -307,7 +333,8 @@ static void lower_sort(uint32_t dst[], const uint2 src[],
 
 __device__ __forceinline__
 void sort_row(uint32_t inout[], size_t len, uint2 temp[],
-              uint32_t histogram[], uint32_t wbits, uint32_t lsbits)
+              uint32_t histogram[], uint32_t wbits, uint32_t lsbits,
+              uint32_t* sync_data = nullptr)
 {
     assert(len <= (1U<<31) && wbits <= 2*DIGIT_BITS && gridDim.x <= WARP_SZ);
 
@@ -322,7 +349,7 @@ void sort_row(uint32_t inout[], size_t len, uint2 temp[],
             top_bits = wbits - low_bits;
         }
 
-        upper_sort(temp, inout, len, lsbits, top_bits, low_bits, histogram);
+        upper_sort(temp, inout, len, lsbits, top_bits, low_bits, histogram, sync_data);
 
         histogram += blockIdx.x<<low_bits;
 
@@ -366,11 +393,18 @@ __global__ void sort(uint32_t inout[], size_t len, uint2 temp[],
 __launch_bounds__(SORT_BLOCKDIM)
 __global__ void sort(vec2d_t<uint32_t> inouts, size_t len, uint32_t win,
                      vec2d_t<uint2> temps, vec2d_t<uint32_t> histograms,
-                     uint32_t wbits, uint32_t lsbits0, uint32_t lsbits1)
+                     uint32_t wbits, uint32_t lsbits0, uint32_t lsbits1,
+                     uint32_t* sync_data,
+                     uint32_t last_lsbits)
 {
     win += blockIdx.y;
+    uint32_t lsbits;
+    if (last_lsbits != 0xFFFFFFFF && blockIdx.y == gridDim.y - 1)
+        lsbits = last_lsbits;
+    else
+        lsbits = blockIdx.y == 0 ? lsbits0 : lsbits1;
     sort_row(inouts[win], len, temps[blockIdx.y], histograms[win],
-             wbits, blockIdx.y==0 ? lsbits0 : lsbits1);
+             wbits, lsbits, sync_data);
 }
 
 # undef asm

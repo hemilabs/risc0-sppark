@@ -5,11 +5,29 @@
 #ifndef __NTT_KERNELS_CU__
 #define __NTT_KERNELS_CU__
 
-#if defined(__NVCC__)
-# include <cooperative_groups.h>
-#elif defined(__HIPCC__)
-# include <hip/hip_cooperative_groups.h>
-#endif
+// Grid barrier via atomic counters, replaces cooperative_groups grid sync.
+// Requires that all launched blocks can be resident simultaneously.
+static __device__ unsigned int lde_grid_sync_count = 0;
+static __device__ unsigned int lde_grid_sync_gen = 0;
+
+static __device__ __forceinline__ void grid_barrier_sync()
+{
+    __syncthreads();
+    __threadfence();
+
+    if (threadIdx.x == 0) {
+        unsigned int gen = lde_grid_sync_gen;
+        if (atomicAdd(&lde_grid_sync_count, 1) == gridDim.x - 1) {
+            lde_grid_sync_count = 0;
+            __threadfence();
+            atomicExch(&lde_grid_sync_gen, gen + 1);
+        } else {
+            while (atomicAdd(&lde_grid_sync_gen, 0) == gen);
+        }
+    }
+
+    __syncthreads();
+}
 
 // Permutes the data in an array such that data[i] = data[bit_reverse(i)]
 // and data[bit_reverse(i)] = data[i]
@@ -170,11 +188,13 @@ template<class fr_t>
 __launch_bounds__(1024) __global__
 void LDE_distribute_powers(fr_t* d_inout, uint32_t lg_domain_size,
                            uint32_t lg_blowup, bool bitrev,
-                           const fr_t (*gen_powers)[WINDOW_SIZE])
+                           const fr_t (*gen_powers)[WINDOW_SIZE],
+                           const unsigned int col_stride = 0)
 {
 #if 0
     assert(blockDim.x * gridDim.x == blockDim.x * (size_t)gridDim.x);
 #endif
+    if (col_stride) d_inout += (index_t)blockIdx.y * col_stride;
     size_t domain_size = (size_t)1 << lg_domain_size;
     index_t idx = threadIdx.x + blockDim.x * blockIdx.x;
 
@@ -242,7 +262,7 @@ void LDE_spread_distribute_powers(fr_t* out, fr_t* in,
         exchange[threadIdx.x] = r;
 
         if (overlapping_data && (iter >= (blowup - 1) * (iters >> lg_blowup)))
-            cooperative_groups::this_grid().sync();
+            grid_barrier_sync();
         else
             __syncthreads();
 
