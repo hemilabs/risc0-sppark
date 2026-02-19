@@ -238,12 +238,6 @@ public:
             gpu.select();
 
             size_t domain_size = (size_t)1 << lg_domain_size;
-
-            // Pin host memory for faster PCIe transfers (best-effort)
-            size_t bytes = domain_size * sizeof(fr_t);
-            bool pinned = (cudaHostRegister(inout, bytes,
-                                            cudaHostRegisterDefault) == cudaSuccess);
-
             dev_ptr_t<fr_t> d_inout{domain_size, gpu};
             gpu.HtoD(&d_inout[0], inout, domain_size);
 
@@ -251,9 +245,6 @@ public:
 
             gpu.DtoH(inout, &d_inout[0], domain_size);
             gpu.sync();
-
-            if (pinned)
-                cudaHostUnregister(inout);
         } catch (const cuda_error& e) {
             gpu.sync();
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
@@ -295,17 +286,11 @@ protected:
             block_size = 1024;
         }
 
-        size_t shared_sz = sizeof(fr_t) * block_size;
-#ifdef __NVCC__
-        if (gpu_props(stream).sharedMemPerBlock < shared_sz)
-            CUDA_OK(cudaFuncSetAttribute(
-                LDE_spread_distribute_powers<fr_t>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize, shared_sz));
-#endif
-        LDE_spread_distribute_powers<<<num_blocks, block_size,
-                                       shared_sz, stream>>>
-            (ext_domain_data, domain_data, gen_powers,
-             lg_domain_size, lg_blowup, perform_shift, ext_pow);
+        stream.launch_coop(LDE_spread_distribute_powers,
+                        {dim3(num_blocks), dim3(block_size),
+                         sizeof(fr_t) * block_size},
+                        ext_domain_data, domain_data, gen_powers,
+                        lg_domain_size, lg_blowup, perform_shift, ext_pow);
     }
 
 public:
@@ -317,18 +302,6 @@ public:
             size_t domain_size = (size_t)1 << lg_domain_size;
             size_t ext_domain_size = domain_size << lg_blowup;
             size_t aux_size = aux_out != nullptr ? domain_size : 0;
-
-            // Pin host memory for faster PCIe transfers (best-effort)
-            size_t inout_bytes = ext_domain_size * sizeof(fr_t);
-            bool pinned = (cudaHostRegister(inout, inout_bytes,
-                                            cudaHostRegisterDefault) == cudaSuccess);
-            bool aux_pinned = false;
-            if (aux_out != nullptr) {
-                size_t aux_bytes = domain_size * sizeof(fr_t);
-                aux_pinned = (cudaHostRegister(aux_out, aux_bytes,
-                                               cudaHostRegisterDefault) == cudaSuccess);
-            }
-
             // The 2nd to last 'domain_size' chunk will hold the original data
             // The last chunk will get the bit reversed iNTT data
             dev_ptr_t<fr_t> d_inout{ext_domain_size + aux_size, gpu}; // + domain_size for aux buffer
@@ -366,11 +339,6 @@ public:
             }
             gpu.DtoH(inout, ext_domain_data, ext_domain_size);
             gpu.sync();
-
-            if (pinned)
-                cudaHostUnregister(inout);
-            if (aux_pinned)
-                cudaHostUnregister(aux_out);
         } catch (const cuda_error& e) {
             gpu.sync();
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
@@ -427,9 +395,5 @@ public:
     {
         LDE_launch(stream, d_out, d_in, NULL, lg_domain_size, lg_blowup, false);
     }
-
-    static void bit_rev_dev_ptr(stream_t& stream, fr_t* d_inout,
-                                uint32_t lg_domain_size)
-    {   bit_rev(d_inout, d_inout, lg_domain_size, stream);   }
 };
 #endif

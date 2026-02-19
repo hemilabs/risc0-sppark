@@ -5,29 +5,11 @@
 #ifndef __NTT_KERNELS_CU__
 #define __NTT_KERNELS_CU__
 
-// Grid barrier via atomic counters, replaces cooperative_groups grid sync.
-// Requires that all launched blocks can be resident simultaneously.
-static __device__ unsigned int lde_grid_sync_count = 0;
-static __device__ unsigned int lde_grid_sync_gen = 0;
-
-static __device__ __forceinline__ void grid_barrier_sync()
-{
-    __syncthreads();
-    __threadfence();
-
-    if (threadIdx.x == 0) {
-        unsigned int gen = lde_grid_sync_gen;
-        if (atomicAdd(&lde_grid_sync_count, 1) == gridDim.x - 1) {
-            lde_grid_sync_count = 0;
-            __threadfence();
-            atomicExch(&lde_grid_sync_gen, gen + 1);
-        } else {
-            while (atomicAdd(&lde_grid_sync_gen, 0) == gen);
-        }
-    }
-
-    __syncthreads();
-}
+#if defined(__NVCC__)
+# include <cooperative_groups.h>
+#elif defined(__HIPCC__)
+# include <hip/hip_cooperative_groups.h>
+#endif
 
 // Permutes the data in an array such that data[i] = data[bit_reverse(i)]
 // and data[bit_reverse(i)] = data[i]
@@ -262,7 +244,7 @@ void LDE_spread_distribute_powers(fr_t* out, fr_t* in,
         exchange[threadIdx.x] = r;
 
         if (overlapping_data && (iter >= (blowup - 1) * (iters >> lg_blowup)))
-            grid_barrier_sync();
+            cooperative_groups::this_grid().sync();
         else
             __syncthreads();
 
