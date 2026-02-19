@@ -57,14 +57,11 @@ struct launch_params_t {
 class stream_t {
     cudaStream_t stream;
     const int gpu_id;
-    bool owned;
 public:
-    stream_t(int id) : gpu_id(id), owned(true)
+    stream_t(int id) : gpu_id(id)
     {   CUDA_OK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));   }
-    stream_t(cudaStream_t s, int id) : stream(s), gpu_id(id), owned(false)
-    {}
     ~stream_t()
-    {   if (owned) (void)cudaStreamDestroy(stream);   }
+    {   (void)cudaStreamDestroy(stream);   }
     inline operator decltype(stream)() const    { return stream; }
     inline int id() const                       { return gpu_id; }
     inline operator int() const                 { return gpu_id; }
