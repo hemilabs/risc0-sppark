@@ -1,5 +1,5 @@
 [package]
-name = "risc0-sppark"
+name = "sppark"
 version = "0.1.12"
 edition = "2021"
 description = "Zero-knowledge template library"
