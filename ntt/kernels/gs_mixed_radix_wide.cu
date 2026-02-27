@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 template <int intermediate_mul, class fr_t>
-__launch_bounds__(768, 1) __global__
+__launch_bounds__(768, 1)
+__global__
 void _GS_NTT(const unsigned int radix, const unsigned int lg_domain_size,
              const unsigned int stage, const unsigned int iterations,
              fr_t* d_inout, const fr_t (*d_partial_twiddles)[WINDOW_SIZE],
@@ -13,6 +14,8 @@ void _GS_NTT(const unsigned int radix, const unsigned int lg_domain_size,
              const bool is_intt, const fr_t d_domain_size_inverse,
              const unsigned int col_stride = 0)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
 #if (__CUDACC_VER_MAJOR__-0) >= 11 || defined(__clang__)
     __builtin_assume(lg_domain_size <= MAX_LG_DOMAIN_SIZE);
     __builtin_assume(radix <= lg_domain_size);
@@ -126,6 +129,7 @@ void _GS_NTT(const unsigned int radix, const unsigned int lg_domain_size,
 
     d_inout[idx0] = r0;
     d_inout[idx1] = r1;
+#endif
 }
 
 class GS_launcher {

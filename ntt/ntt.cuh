@@ -12,21 +12,10 @@
 #include <util/rusterror.h>
 #include <util/gpu_t.cuh>
 
-#if defined(__NVCC__)
-# define noop()
-#elif defined(__HIPCC__)
-# pragma clang diagnostic push
-# pragma clang diagnostic ignored "-Wunused-function"
 __device__ __noinline__ static void noop() { asm(""); }
-# pragma clang diagnostic push
-#endif
 
 #include "parameters.cuh"
 #include "kernels.cu"
-
-#ifdef noop
-# undef noop
-#endif
 
 class NTT {
 public:
@@ -46,10 +35,10 @@ protected:
         const uint32_t Z_COUNT = 256 / sizeof(fr_t);
         const uint32_t warpSize = gpu_props(stream).warpSize;
         const uint32_t bsize = Z_COUNT>warpSize ? Z_COUNT : warpSize;
-#ifdef __HIPCC__
-        const uint32_t lg_switch = 17;
+#if defined(__HIPCC__) && __AMDGCN_WAVEFRONT_SIZE == 64
+        const uint32_t lg_switch = 17;  // CDNA (wave64)
 #else
-        const uint32_t lg_switch = 32;
+        const uint32_t lg_switch = 32;  // NVIDIA and RDNA (wave32)
 #endif
 
         if (domain_size <= 1024)

@@ -70,9 +70,13 @@ uint32_t pack(uint32_t a, uint32_t mask, uint32_t b)
 {
     uint32_t ret;
 
+#ifdef __CUDA_ARCH__
     asm("lop3.b32 %0, %1, %2, %3, 0xb8;" // a & ~mask | mask & b
         : "=r"(ret)
         : "r"(a), "r"(mask), "r"(b));
+#else
+    ret = (a & ~mask) | (mask & b);
+#endif
 
     return ret;
 }
@@ -81,11 +85,17 @@ __device__ __forceinline__
 uint32_t sum_up(uint32_t sum, const uint32_t limit = WARP_SZ)
 {
     #pragma unroll
-    for (uint32_t off = 1; off < limit; off <<= 1)
+    for (uint32_t off = 1; off < limit; off <<= 1) {
+#ifdef __CUDA_ARCH__
         asm("{ .reg.b32 %v; .reg.pred %did;"
             "  shfl.sync.up.b32 %v|%did, %0, %1, 0, 0xffffffff;"
             "  @%did add.u32 %0, %0, %v;"
             "}" : "+r"(sum) : "r"(off));
+#else
+        { uint32_t v = __shfl_up_sync(0xffffffff, sum, off);
+          if (threadIdx.x % WARP_SZ >= off) sum += v; }
+#endif
+    }
 
     return sum;
 }
@@ -193,10 +203,15 @@ static void upper_sort(uint2 dst[], const uint32_t src[], uint32_t len,
         if (sub_laneid == blockIdx.x)
             counters[warp_off] = sum;
 
+#ifdef __CUDA_ARCH__
         asm("{ .reg.b32 %v; .reg.pred %did;");
         asm("shfl.sync.up.b32 %v|%did, %0, 1, 0, 0xffffffff;" :: "r"(sum));
         asm("@%did mov.b32 %0, %v;" : "+r"(h.x));
         asm("}");
+#else
+        { uint32_t v = __shfl_up_sync(0xffffffff, sum, 1);
+          if (threadIdx.x % WARP_SZ >= 1) h.x = v; }
+#endif
         h.y = __shfl_down_sync(0xffffffff, sum, gridDim.x-1) - h.x;
 
         if (blockIdx.x == 0 && sub_laneid == 0 && warp_off < 1<<bits)

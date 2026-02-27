@@ -19,13 +19,13 @@ class xyzz_t {
 public:
     static const unsigned int degree = field_t::degree;
 
-    xyzz_t() = default;
+    inline __host__ __device__ xyzz_t() {};
     inline __host__ __device__ xyzz_t(const field_t& x, const field_t& y, bool is_inf) :
                                                    X(x),             Y(y),
                                                    ZZZ(field_t::one(is_inf)),
                                                    ZZ(ZZZ) {}
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
     class mem_t { friend class xyzz_t;
         field_h X, Y, ZZZ, ZZ;
 
@@ -89,7 +89,7 @@ public:
     {   return jacobian_t<field_t, field_h, a4>{ X*ZZ, Y*ZZZ, ZZ };   }
 #endif
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     inline __device__ bool is_inf() const
     {   return (bool)(ZZZ.is_zero(ZZ));   }
 #else
@@ -123,7 +123,7 @@ public:
             return;
         }
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         xyzz_t p31 = *this;
 #else
         xyzz_t& p31 = *this;
@@ -171,7 +171,7 @@ public:
             M = p31.X^2;
             M = M + M + M;          /* M = 3*X1^2[+a*ZZ1^2] */
             if (a4 != nullptr) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
                 U = *a4;
                 U *= p31.ZZ^2;
 #else
@@ -194,12 +194,12 @@ public:
         } else {                    /* X1==X2 && Y1==-Y2 */\
             p31.inf();              /* set |p3| to infinity */\
         }
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         *this = p31;
 #endif
     }
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     __device__ void uadd(const xyzz_t& p2)
     {
         xyzz_t p31 = *this;
@@ -344,24 +344,24 @@ public:
 
     /*
      * http://hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#doubling-dbl-2008-s-1
-     * Cost: 4M+3S (a=0), 5M+4S (a!=0).
+     * Cost: 6M+3S (a=0), 7M+4S (a!=0).
      */
     __host__ __device__ void dbl()
     {
         if (is_inf()) return;
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         xyzz_t p31 = *this;
 #else
         xyzz_t& p31 = *this;
 #endif
-        field_t U, S, M;
+        field_t U, S, M, V, W;
 
         M = p31.X^2;
         M = M + M + M;               /* M = 3*X1^2 */
         if (a4 != nullptr) {
             field_t azz = p31.ZZ^2;  /* ZZ1^2 */
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
             azz *= (U = *a4);
 #else
             azz *= *a4;
@@ -370,20 +370,23 @@ public:
         }
 
         U = p31.Y << 1;              /* U = 2*Y1 */
-        p31.ZZ = U^2;                /* ZZ3 = V = U^2 */
-        p31.ZZZ = U * p31.ZZ;        /* ZZZ3 = W = U*V */
-        S = p31.X * p31.ZZ;          /* S = X1*V */
+        V = U^2;                      /* V = U^2 */
+        W = U * V;                    /* W = U*V */
+        S = p31.X * V;               /* S = X1*V */
 
         p31.X = M^2;
         p31.X -= S;
         p31.X -= S;                  /* X3 = M^2 - 2*S */
 
-        p31.Y *= p31.ZZZ;            /* Y1*W (original Y1) */
+        p31.Y *= W;                  /* Y1*W (original Y1) */
         S -= p31.X;
         S *= M;                      /* M*(S-X3) */
         p31.Y = S - p31.Y;           /* Y3 = M*(S-X3) - W*Y1 */
 
-#ifdef __CUDA_ARCH__
+        p31.ZZ *= V;                 /* ZZ3 = V * ZZ1 */
+        p31.ZZZ *= W;                /* ZZZ3 = W * ZZZ1 */
+
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         *this = p31;
 #endif
     }
@@ -397,7 +400,7 @@ public:
     template<class affine_t>
     __host__ __device__ void add(const affine_t& p2, bool subtract = false)
     {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         xyzz_t p31 = *this;
 #else
         xyzz_t& p31 = *this;
@@ -449,7 +452,7 @@ public:
                 M = p2.X^2;
                 M = M + M + M;          /* M = 3*X1^2[+a] */
                 if (a4 != nullptr) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
                     M += (U = *a4);
 #else
                     M += *a4;
@@ -469,7 +472,7 @@ public:
                 p31.inf();              /* set |p3| to infinity */
             }
         }
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         *this = p31;
 #endif
     }
@@ -480,7 +483,7 @@ public:
      * and p2 != *this (no doubling case). These hold for
      * Pippenger accumulate after the first point init.
      */
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     template<class affine_t>
     __device__ void add_unsafe(const affine_t& p2, bool subtract = false)
     {
@@ -519,7 +522,7 @@ public:
     {   add(p2, subtract);   }
 #endif
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     template<class affine_t>
     __device__ void uadd(const affine_t& p2, bool subtract = false)
     {

@@ -10,25 +10,11 @@
 # include "pow.hpp"
 
 //
-// This is a trimmed-down version tailored for use in NTT only.
+// Pure C++ Montgomery field arithmetic for HIP/ROCm.
+// Avoids VCC-based inline assembly that causes GPU hangs on RDNA4 (gfx1201)
+// when many field operations are composed in complex kernels (e.g. MSM
+// accumulate with add_unsafe).
 //
-
-# if defined(__GFX10__) || defined(__GFX11__) || defined(__GFX12__)
-#  define v_addc_co_u32 "v_add_co_ci_u32 "
-#  define v_subb_co_u32 "v_sub_co_ci_u32 "
-# elif defined(__GFX9__)
-#  define v_addc_co_u32 "v_addc_co_u32 "
-#  define v_subb_co_u32 "v_subb_co_u32 "
-# elif !defined(__HIP_DEVICE_COMPILE__)
-#  define v_addc_co_u32 "v_dummy "
-#  define v_subb_co_u32 "v_dummy "
-# else
-#  error "unsupported GFX architecture"
-# endif
-
-# define __MONT_T_STR(x) #x
-# define __MONT_T_XSTR(x) __MONT_T_STR(x)
-# define S_OP(op) "s_" #op "_b" __MONT_T_XSTR(__AMDGCN_WAVEFRONT_SIZE) " "
 
 # define inline __device__ __forceinline__
 
@@ -53,14 +39,6 @@ protected:
 private:
     uint32_t val[n];
 
-# if __AMDGCN_WAVEFRONT_SIZE == 64
-    using cond_t = uint64_t;
-# else
-    using cond_t = uint32_t;
-# endif
-
-    static __device__ __noinline__ void noop()          { asm("");       }
-
     inline operator const uint32_t*() const             { return val;    }
     inline operator uint32_t*()                         { return val;    }
 
@@ -79,14 +57,6 @@ public:
     template<typename... Ts>
     constexpr mont_t(uint32_t a0, Ts... arr) : val{a0, arr...} {}
 
-    __host__ mont_t(const uint64_t p[n/2])
-    {
-        for (size_t i=0; i<n/2; i++) {
-            val[2*i]     = (uint32_t)(p[i]);
-            val[2*i + 1] = (uint32_t)(p[i] >> 32);
-        }
-    }
-
     inline void store(uint32_t p[n]) const
     {
         for (size_t i=0; i<n; i++)
@@ -95,14 +65,13 @@ public:
 
     inline mont_t& operator+=(const mont_t& b)
     {
-        cond_t carry;
-
-        asm("v_add_co_u32   %0, %1, %0, %2"         : "+v"(val[0]), "=s"(carry)
-                                                    : "v"(b[0]));
-        for (size_t i=1; i<n; i++)
-            asm( v_addc_co_u32 "%0, %1, %0, %2, %1" : "+v"(val[i]), "+s"(carry)
-                                                    : "v"(b[i]));
-        final_sub(carry);
+        uint64_t carry = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t sum = (uint64_t)val[i] + b[i] + carry;
+            val[i] = (uint32_t)sum;
+            carry = sum >> 32;
+        }
+        final_sub((uint32_t)carry);
 
         return *this;
     }
@@ -111,26 +80,27 @@ public:
 
     inline mont_t& operator-=(const mont_t& b)
     {
-        cond_t borrow, carry;
         uint32_t tmp[n];
 
-        asm("v_sub_co_u32   %0, %1, %0, %2"         : "+v"(val[0]), "=s"(borrow)
-                                                    : "v"(b[0]));
-        for (size_t i=1; i<n; i++)
-            asm( v_subb_co_u32 "%0, %1, %0, %2, %1" : "+v"(val[i]), "+s"(borrow)
-                                                    : "v"(b[i]));
-
-        asm("v_add_co_u32   %0, %1, %2, %3"         : "=v"(tmp[0]), "=s"(carry)
-                                                    : "v"(val[0]), "v"(MOD[0]));
-        for (size_t i=1; i<n; i++) {
-            asm( v_addc_co_u32 "%0, %1, %2, %3, %1" : "=v"(tmp[i]), "+s"(carry)
-                                                    : "v"(val[i]), "v"(MOD[i]));
-            asm("v_cndmask_b32  %0, %0, %1, %2"     : "+v"(val[i-1])
-                                                    : "v"(tmp[i-1]), "s"(borrow));
+        // Subtract: val = val - b
+        uint64_t borrow = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t diff = (uint64_t)val[i] - b[i] - borrow;
+            val[i] = (uint32_t)diff;
+            borrow = (diff >> 32) & 1;
         }
-        asm("v_cndmask_b32  %0, %0, %1, %2"         : "+v"(val[n-1])
-                                                    : "v"(tmp[n-1]), "s"(borrow));
-        noop();
+
+        // Compute corrected: tmp = val + MOD
+        uint64_t carry = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t sum = (uint64_t)val[i] + MOD[i] + carry;
+            tmp[i] = (uint32_t)sum;
+            carry = sum >> 32;
+        }
+
+        // If there was a borrow, select corrected value
+        for (size_t i = 0; i < n; i++)
+            val[i] = borrow ? tmp[i] : val[i];
 
         return *this;
     }
@@ -140,9 +110,10 @@ public:
     friend inline mont_t operator*(const mont_t& a, const mont_t& b)
     {
         union { uint64_t ul; uint32_t u[2]; };
-        cond_t carry = 0;
         mont_t ret;
         size_t i;
+
+        uint32_t carry_bit = 0;
 
         uint64_t mx = b[0];
         ul = mx * a[0];
@@ -163,8 +134,9 @@ public:
             if (N%32 != 0) {
                 ret[n-1] = u[1] + top;
             } else {
-                asm( v_addc_co_u32 "%0, %1, %2, %3, %1" : "=v"(ret[n-1]), "+s"(carry)
-                                                        : "v"(u[1]), "v"(top));
+                uint64_t sum = (uint64_t)u[1] + top + carry_bit;
+                ret[n-1] = (uint32_t)sum;
+                carry_bit = (uint32_t)(sum >> 32);
             }
 
             if (++j == n)
@@ -180,12 +152,13 @@ public:
             if (N%32 != 0) {
                 top = u[1];
             } else {
-                asm( v_addc_co_u32 "%0, %1, %2, 0, %1"  : "=v"(top), "+s"(carry)
-                                                        : "v"(u[1]));
+                uint64_t sum = (uint64_t)u[1] + carry_bit;
+                top = (uint32_t)sum;
+                carry_bit = (uint32_t)(sum >> 32);
             }
         }
 
-        ret.final_sub(carry);
+        ret.final_sub(carry_bit);
 
         return ret;
     }
@@ -236,26 +209,16 @@ public:
     friend inline mont_t czero(const mont_t& a, int set_z)
     {
         mont_t ret;
-        cond_t cond;
-
-        asm("v_cmp_ne_u32  %0, %1, 0"           : "=s"(cond)
-                                                : "v"(set_z));
-        for (size_t i=0; i<n; i++)
-            asm("v_cndmask_b32 %0, %1, 0, %2"   : "=v"(ret[i])
-                                                : "v"(a[i]), "s"(cond));
+        for (size_t i = 0; i < n; i++)
+            ret[i] = set_z ? 0 : a[i];
         return ret;
     }
 
     static inline mont_t csel(const mont_t& a, const mont_t& b, int sel_a)
     {
         mont_t ret;
-        cond_t cond;
-
-        asm("v_cmp_ne_u32  %0, %1, 0"           : "=s"(cond)
-                                                : "v"(sel_a));
-        for (size_t i=0; i<n; i++)
-            asm("v_cndmask_b32 %0, %1, %2, %3"  : "=v"(ret[i])
-                                                : "v"(b[i]), "v"(a[i]), "s"(cond));
+        for (size_t i = 0; i < n; i++)
+            ret[i] = sel_a ? a[i] : b[i];
         return ret;
     }
 
@@ -267,23 +230,213 @@ public:
             val[i] = __builtin_amdgcn_ds_bpermute(idx, val[i]);
     }
 
-private:
-    inline void final_sub(cond_t carry)
+    inline mont_t shfl(uint32_t idx, uint32_t mask = 0xffffffff) const
     {
-        cond_t borrow;
+        mont_t ret;
+        idx += threadIdx.x & ~31u;
+        idx *= sizeof(uint32_t);
+        for (size_t i = 0; i < n; i++)
+            ret[i] = __builtin_amdgcn_ds_bpermute(idx, val[i]);
+        return ret;
+    }
+
+protected:
+    template<typename vec_t>
+    static inline vec_t shfl_xor(const vec_t& a, uint32_t lane_mask = 1)
+    {
+        vec_t ret;
+        uint32_t idx = (threadIdx.x ^ lane_mask) * sizeof(uint32_t);
+        for (size_t i = 0; i < sizeof(vec_t)/sizeof(uint32_t); i++)
+            ret[i] = __builtin_amdgcn_ds_bpermute(idx, a[i]);
+        return ret;
+    }
+
+public:
+    inline bool is_zero() const
+    {
+        uint32_t is_z = val[0] | val[1];
+        for (size_t i = 2; i < n; i += 2)
+            is_z |= val[i] | val[i+1];
+        return is_z == 0;
+    }
+
+    inline bool is_one() const
+    {
+        uint32_t is_z = val[0] ^ ONE[0];
+        for (size_t i = 1; i < n; i++)
+            is_z |= val[i] ^ ONE[i];
+        return is_z == 0;
+    }
+
+    inline bool is_zero(const mont_t& a) const
+    {
+        uint32_t is_z = val[0] | a[0];
+        for (size_t i = 1; i < n; i++)
+            is_z |= val[i] | a[i];
+        return is_z == 0;
+    }
+
+    static inline mont_t one(int or_zero)
+    {
+        mont_t ret;
+
+        for (size_t i = 0; i < n; i++)
+            ret[i] = or_zero ? 0 : ONE[i];
+        return ret;
+    }
+
+    inline mont_t& cneg(bool flag)
+    {
+        // Pure C++ implementation to avoid VCC assembly issues on RDNA4.
+        // Compute tmp = MOD - val (negate in field)
+        uint32_t tmp[n], is_z = val[0];
+        uint64_t borrow = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t diff = (uint64_t)MOD[i] - val[i] - borrow;
+            tmp[i] = (uint32_t)diff;
+            borrow = (diff >> 32) & 1;
+            if (i > 0) is_z |= val[i];
+        }
+
+        // Select: if flag && val != 0, use tmp; else keep val
+        bool do_neg = flag & (is_z != 0);
+        for (size_t i = 0; i < n; i++)
+            val[i] = do_neg ? tmp[i] : val[i];
+        return *this;
+    }
+    static inline mont_t cneg(const mont_t& a, bool flag)
+    {   mont_t ret = a; return ret.cneg(flag);   }
+    inline mont_t operator-() const
+    {   return cneg(*this, true);   }
+
+    inline bool abs()
+    {
         uint32_t tmp[n];
 
-        asm("v_sub_co_u32   %0, %1, %2, %3"         : "=v"(tmp[0]), "=s"(borrow)
-                                                    : "v"(val[0]), "v"(MOD[0]));
-        for (size_t i=1; i<n; i++)
-            asm( v_subb_co_u32 "%0, %1, %2, %3, %1" : "=v"(tmp[i]), "+s"(borrow)
-                                                    : "v"(val[i]), "v"(MOD[i]));
-        asm(S_OP(orn2)     "%0, %0, %1"             : "+s"(carry)
-                                                    : "s"(borrow));
-        for (size_t i=0; i<n; i++)
-            asm("v_cndmask_b32  %0, %0, %1, %2"     : "+v"(val[i])
-                                                    : "v"(tmp[i]), "s"(carry));
-        noop();
+        // Compute tmp = MOD - val
+        uint64_t borrow = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t diff = (uint64_t)MOD[i] - val[i] - borrow;
+            tmp[i] = (uint32_t)diff;
+            borrow = (diff >> 32) & 1;
+        }
+
+        // Compare high word to determine sign
+        uint32_t sign = tmp[n-1] < val[n-1];
+
+        // If sign, use negated value (the smaller one)
+        for (size_t i = 0; i < n; i++)
+            val[i] = sign ? tmp[i] : val[i];
+        return sign;
+    }
+
+    inline mont_t& operator<<=(unsigned l)
+    {
+        while (l--) {
+            uint64_t carry = 0;
+            for (size_t i = 0; i < n; i++) {
+                uint64_t sum = (uint64_t)val[i] + val[i] + carry;
+                val[i] = (uint32_t)sum;
+                carry = sum >> 32;
+            }
+            final_sub((uint32_t)carry);
+        }
+        return *this;
+    }
+    friend inline mont_t operator<<(mont_t a, unsigned l)
+    {   return a <<= l;   }
+
+    inline mont_t& operator>>=(unsigned r)
+    {
+        while (r--) {
+            uint32_t tmp[n+1];
+            tmp[n] = 0 - (val[0] & 1);
+            for (size_t i = 0; i < n; i++)
+                tmp[i] = MOD[i] & tmp[n];
+
+            // Add val to tmp
+            uint64_t carry = 0;
+            for (size_t i = 0; i < n; i++) {
+                uint64_t sum = (uint64_t)tmp[i] + val[i] + carry;
+                tmp[i] = (uint32_t)sum;
+                carry = sum >> 32;
+            }
+            if (N%32 == 0)
+                tmp[n] = (uint32_t)carry;
+
+            // Funnel-shift right by 1
+            for (size_t i = 0; i < n-1; i++)
+                val[i] = (tmp[i] >> 1) | (tmp[i+1] << 31);
+            if (N%32 == 0)
+                val[n-1] = (tmp[n-1] >> 1) | (tmp[n] << 31);
+            else
+                val[n-1] = tmp[n-1] >> 1;
+        }
+        return *this;
+    }
+    friend inline mont_t operator>>(mont_t a, unsigned r)
+    {   return a >>= r;   }
+
+    friend inline bool operator==(const mont_t& a, const mont_t& b)
+    {
+        uint32_t z = a[0] ^ b[0];
+        for (size_t i = 1; i < n; i++)
+            z |= a[i] ^ b[i];
+        return z == 0;
+    }
+    friend inline bool operator!=(const mont_t& a, const mont_t& b)
+    {   return !(a == b);   }
+
+    inline mont_t reciprocal() const
+    {
+        // Fermat's little theorem: a^(-1) = a^(MOD-2) mod MOD
+        uint32_t exp[n];
+        exp[0] = MOD[0] - 2;
+        for (size_t i = 1; i < n; i++)
+            exp[i] = MOD[i];
+
+        // Find MSB of exponent
+        int top = n - 1;
+        while (top > 0 && exp[top] == 0) top--;
+        int msb = 31 - __clz(exp[top]);
+
+        // MSB-first binary method (skip the leading 1 bit)
+        mont_t result = *this;
+        for (int w = top; w >= 0; w--) {
+            int start = (w == top) ? msb - 1 : 31;
+            for (int b = start; b >= 0; b--) {
+                result.sqr();
+                if (exp[w] & (1u << b))
+                    result *= *this;
+            }
+        }
+
+        return result;
+    }
+    friend inline mont_t operator/(int one, const mont_t& a)
+    {   if (one != 1) __builtin_trap(); return a.reciprocal();   }
+    friend inline mont_t operator/(const mont_t& a, const mont_t& b)
+    {   return a * b.reciprocal();   }
+    inline mont_t& operator/=(const mont_t& a)
+    {   return *this *= a.reciprocal();   }
+
+private:
+    inline void final_sub(uint32_t carry)
+    {
+        uint32_t tmp[n];
+
+        // Subtract MOD: tmp = val - MOD
+        uint64_t borrow = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t diff = (uint64_t)val[i] - MOD[i] - borrow;
+            tmp[i] = (uint32_t)diff;
+            borrow = (diff >> 32) & 1;
+        }
+
+        // Select subtracted result if carry from add, or val >= MOD (no borrow)
+        bool select = carry || !borrow;
+        for (size_t i = 0; i < n; i++)
+            val[i] = select ? tmp[i] : val[i];
     }
 
     inline void mul_by_1()
@@ -300,12 +453,25 @@ private:
             val[n-1] = u[1];
         }
     }
+
+public:
+    // Generic dot_product: sum of a[i]*b[i] for i in [0, len)
+    static inline mont_t dot_product(const mont_t a[], const mont_t* b_ptr,
+                                     size_t len, size_t stride_b = 1)
+    {
+        mont_t acc = a[0] * *b_ptr;
+        for (size_t j = 1; j < len; j++) {
+            b_ptr += stride_b;
+            acc += a[j] * *b_ptr;
+        }
+        return acc;
+    }
+
+    static inline mont_t dot_product(const mont_t& a, const mont_t& b,
+                                     const mont_t& c, const mont_t& d)
+    {   return a*b + c*d;   }
+
 };
 
 # undef inline
-# undef v_subb_co_u32
-# undef v_addc_co_u32
-# undef S_OP
-# undef __MONT_T_XSTR
-# undef __MONT_T_STR
 #endif

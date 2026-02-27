@@ -87,6 +87,8 @@ template<class fr_t> __global__
 void generate_partial_twiddles(fr_t (*roots)[WINDOW_SIZE],
                                const fr_t root_of_unity)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     const unsigned int tid = threadIdx.x + blockDim.x * blockIdx.x;
     assert(tid < WINDOW_SIZE);
 
@@ -99,11 +101,14 @@ void generate_partial_twiddles(fr_t (*roots)[WINDOW_SIZE],
             root.sqr();
         roots[off][tid] = root;
     }
+#endif
 }
 
 template<class fr_t> __launch_bounds__(512) __global__
 void generate_all_twiddles(fr_t* d_radixX_twiddles, const fr_t root10)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     fr_t root = root10^threadIdx.x;
 
     d_radixX_twiddles[threadIdx.x] = root;
@@ -123,12 +128,15 @@ void generate_all_twiddles(fr_t* d_radixX_twiddles, const fr_t root10)
     d_radixX_twiddles += 64;
     if (threadIdx.x % 16 == 0)
         d_radixX_twiddles[threadIdx.x/16] = root;
+#endif
 }
 
 template<class fr_t> __launch_bounds__(512) __global__
 void generate_radixX_twiddles_X(fr_t* d_radixX_twiddles_X, int n,
                                 const fr_t root_of_unity)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     unsigned int nbits = 31 - __clz(blockDim.x);
     unsigned int pow_rev = bit_rev(threadIdx.x, nbits);
 
@@ -162,12 +170,15 @@ void generate_radixX_twiddles_X(fr_t* d_radixX_twiddles_X, int n,
             d_radixX_twiddles_X += gridDim.x * blockDim.x;
         }
     }
+#endif
 }
 
 template<class fr_t> __launch_bounds__(1024) __global__
 void generate_plus_one_twiddles(fr_t (*d_plus_one_twiddles)[1024],
                                 const fr_t root_of_unity)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     fr_t root = root_of_unity^bit_rev(tid, 10);
@@ -178,6 +189,7 @@ void generate_plus_one_twiddles(fr_t (*d_plus_one_twiddles)[1024],
         root.sqr();
         d_plus_one_twiddles[off][tid] = root;
     }
+#endif
 }
 
 class NTTParameters {

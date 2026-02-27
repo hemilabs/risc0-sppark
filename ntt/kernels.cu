@@ -17,6 +17,8 @@ template<class fr_t>
 __launch_bounds__(1024) __global__
 void bit_rev_permutation(fr_t* d_out, const fr_t *d_in, uint32_t lg_domain_size)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     if (gridDim.x == 1 && blockDim.x == (1 << lg_domain_size)) {
         uint32_t idx = threadIdx.x;
         uint32_t rev = bit_rev(idx, lg_domain_size);
@@ -39,12 +41,15 @@ void bit_rev_permutation(fr_t* d_out, const fr_t *d_in, uint32_t lg_domain_size)
             d_out[rev] = t0;
         }
     }
+#endif
 }
 
 template<unsigned int Z_COUNT, class fr_t>
 __launch_bounds__(192, 2) __global__
 void bit_rev_permutation_z(fr_t* out, const fr_t* in, uint32_t lg_domain_size)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     static_assert((Z_COUNT & (Z_COUNT-1)) == 0, "unvalid Z_COUNT");
     const uint32_t LG_Z_COUNT = lg2(Z_COUNT);
 
@@ -126,6 +131,7 @@ void bit_rev_permutation_z(fr_t* out, const fr_t* in, uint32_t lg_domain_size)
 #else
     } while ((tid += blockDim.x*gridDim.x) < step);
 #endif
+#endif
 }
 
 template<class fr_t>
@@ -173,6 +179,8 @@ void LDE_distribute_powers(fr_t* d_inout, uint32_t lg_domain_size,
                            const fr_t (*gen_powers)[WINDOW_SIZE],
                            const unsigned int col_stride = 0)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
 #if 0
     assert(blockDim.x * gridDim.x == blockDim.x * (size_t)gridDim.x);
 #endif
@@ -190,6 +198,7 @@ void LDE_distribute_powers(fr_t* d_inout, uint32_t lg_domain_size,
 
         d_inout[idx] = r;
     }
+#endif
 }
 
 template<class fr_t>
@@ -200,6 +209,8 @@ void LDE_spread_distribute_powers(fr_t* out, fr_t* in,
                                   bool perform_shift = true,
                                   bool ext_pow = false)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
     extern __shared__ int xchg_lde_spread[]; // block size
     fr_t* exchange = reinterpret_cast<decltype(exchange)>(xchg_lde_spread);
 
@@ -274,6 +285,7 @@ void LDE_spread_distribute_powers(fr_t* out, fr_t* in,
 
         idx0 += stride;
     }
+#endif
 }
 
 template<class fr_t>

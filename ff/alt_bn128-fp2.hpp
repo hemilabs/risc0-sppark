@@ -7,7 +7,7 @@
 
 #include "alt_bn128.hpp"
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
 
 # define inline __device__ __forceinline__
 # ifdef __GNUC__
@@ -77,9 +77,9 @@ public:
         return *this = fp_mont::csel(t1, t0, id&1);
     }
     inline fp2_t& operator^=(int p)
-    {   if (p != 2) asm("trap;"); return sqr();     }
+    {   if (p != 2) __builtin_trap(); return sqr();     }
     friend inline fp2_t operator^(fp2_t a, int p)
-    {   if (p != 2) asm("trap;"); return a.sqr();   }
+    {   if (p != 2) __builtin_trap(); return a.sqr();   }
 
     friend inline fp2_t operator+(const fp2_t& a, const fp2_t& b)
     {   return (fp_mont)a + (fp_mont)b;   }
@@ -137,13 +137,17 @@ public:
         auto a = (fp_mont)*this^2;
         auto b = shfl_xor(a);
         a += b;
+#if defined(__CUDA_ARCH__)
         a = ct_inverse_mod_x(a);    // 1/(x[0]^2 + x[1]^2)
+#else
+        a = a.reciprocal();         // Fermat-based inverse on HIP
+#endif
         a *= (fp_mont)*this;
         a.cneg(threadIdx.x&1);
         return a;
     }
     friend inline fp2_t operator/(int one, const fp2_t& a)
-    {   if (one != 1) asm("trap;"); return a.reciprocal();   }
+    {   if (one != 1) __builtin_trap(); return a.reciprocal();   }
     friend inline fp2_t operator/(const fp2_t& a, const fp2_t& b)
     {   return a * b.reciprocal();   }
     inline fp2_t& operator/=(const fp2_t& a)
@@ -168,7 +172,30 @@ class fp2_t {
 
 public:
     static const unsigned int degree = 2;
-    using mem_t = fp2_t;
+
+    // mem_t must be a real nested class (not a type alias) so that the
+    // mangled name "fp2_t::mem_t" matches between hipcc host and device
+    // passes.  With `using mem_t = fp2_t;` the host pass mangles field_h
+    // as "fp2_t" while the device pass mangles it as "fp2_t::mem_t",
+    // causing "Cannot find Symbol" at kernel launch time.
+    class mem_t {
+        vec256x val;
+    public:
+        inline mem_t() {}
+        inline mem_t(const fp2_t& a)
+        {   vec_copy(val, a.val, sizeof(val));   }
+        inline operator fp2_t() const
+        {   fp2_t r; vec_copy(r.val, val, sizeof(val)); return r;   }
+        inline mem_t& operator=(const fp2_t& a)
+        {   vec_copy(val, a.val, sizeof(val)); return *this;   }
+        inline void zero()
+        {   vec_zero(val, sizeof(val));   }
+        inline void to()
+        {   fp2_t tmp = *this; tmp.to(); *this = tmp;   }
+        inline void from()
+        {   fp2_t tmp = *this; tmp.from(); *this = tmp;   }
+        inline void inf() { zero(); }
+    };
 
     inline fp2_t() {}
     inline fp2_t(uint64_t re, uint64_t im = 0)
