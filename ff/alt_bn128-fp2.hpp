@@ -77,9 +77,17 @@ public:
         return *this = fp_mont::csel(t1, t0, id&1);
     }
     inline fp2_t& operator^=(int p)
+#ifdef __HIPCC__
     {   if (p != 2) __builtin_trap(); return sqr();     }
+#else
+    {   if (p != 2) asm("trap;"); return sqr();     }
+#endif
     friend inline fp2_t operator^(fp2_t a, int p)
+#ifdef __HIPCC__
     {   if (p != 2) __builtin_trap(); return a.sqr();   }
+#else
+    {   if (p != 2) asm("trap;"); return a.sqr();   }
+#endif
 
     friend inline fp2_t operator+(const fp2_t& a, const fp2_t& b)
     {   return (fp_mont)a + (fp_mont)b;   }
@@ -147,7 +155,11 @@ public:
         return a;
     }
     friend inline fp2_t operator/(int one, const fp2_t& a)
+#ifdef __HIPCC__
     {   if (one != 1) __builtin_trap(); return a.reciprocal();   }
+#else
+    {   if (one != 1) asm("trap;"); return a.reciprocal();   }
+#endif
     friend inline fp2_t operator/(const fp2_t& a, const fp2_t& b)
     {   return a * b.reciprocal();   }
     inline fp2_t& operator/=(const fp2_t& a)

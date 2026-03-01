@@ -166,7 +166,68 @@ public:
     {   return *this = *this * a;   }
 
     inline mont_t& sqr()
-    {   return *this = *this * *this;   }
+    {
+        // Dedicated squaring exploiting a[i]*a[j] = a[j]*a[i] symmetry.
+        // Product phase: n*(n-1)/2 = 28 off-diagonal + n = 8 diagonal
+        //              = 36 widening muls (vs 64 for schoolbook)
+        // Reduction: mul_by_1() on lower half + add upper half.
+
+        uint32_t prod[2*n];
+
+        // Zero product array
+        for (size_t i = 0; i < 2*n; i++)
+            prod[i] = 0;
+
+        // Upper triangle: accumulate a[i]*a[j] for all i < j
+        for (size_t i = 0; i < n - 1; i++) {
+            uint64_t carry = 0;
+            for (size_t j = i + 1; j < n; j++) {
+                uint64_t p = (uint64_t)val[i] * val[j] + prod[i+j] + carry;
+                prod[i+j] = (uint32_t)p;
+                carry = p >> 32;
+            }
+            prod[i + n] = (uint32_t)carry;
+        }
+
+        // Double the upper triangle (since a[i]*a[j] appears twice)
+        uint32_t shift_carry = 0;
+        for (size_t i = 0; i < 2*n; i++) {
+            uint32_t new_carry = prod[i] >> 31;
+            prod[i] = (prod[i] << 1) | shift_carry;
+            shift_carry = new_carry;
+        }
+
+        // Add diagonal terms: a[i]*a[i] at position 2*i
+        uint32_t d_carry = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t p = (uint64_t)val[i] * val[i];
+            uint64_t sum = (uint64_t)prod[2*i] + (uint32_t)p + d_carry;
+            prod[2*i] = (uint32_t)sum;
+            sum = (uint64_t)prod[2*i+1] + (uint32_t)(p >> 32)
+                                         + (uint32_t)(sum >> 32);
+            prod[2*i+1] = (uint32_t)sum;
+            d_carry = (uint32_t)(sum >> 32);
+        }
+
+        // Montgomery reduction: mul_by_1 on lower half + add upper half.
+        // mul_by_1(lower) ∈ [0, 2P), final_sub → [0, P).
+        // upper < P²/R < P, so sum < 2P, one final_sub suffices.
+        mont_t lower;
+        for (size_t i = 0; i < n; i++)
+            lower[i] = prod[i];
+        lower.mul_by_1();
+        lower.final_sub(0);
+
+        uint64_t carry = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t sum = (uint64_t)lower[i] + prod[n + i] + carry;
+            val[i] = (uint32_t)sum;
+            carry = sum >> 32;
+        }
+        final_sub((uint32_t)carry);
+
+        return *this;
+    }
 
     // raise to a variable power, variable in respect to threadIdx,
     // but mind the ^ operator's precedence!
@@ -181,11 +242,11 @@ public:
     inline mont_t& operator^=(int p)
     {   return pow_byref(*this, p);   }
     friend inline mont_t operator^(mont_t a, int p)
-    {   return p == 2 ? a *= a : a ^= p;   }
+    {   return p == 2 ? a.sqr(), a : a ^= p;   }
     inline mont_t operator()(int p)
     {   return *this^p;   }
     friend inline mont_t sqr(const mont_t& a)
-    {   return a^2;   }
+    {   mont_t ret = a; ret.sqr(); return ret;   }
 
     inline void to()    { mont_t t = RR * *this; *this = t; }
     inline void from()  { mul_by_1(); }

@@ -290,6 +290,18 @@ public:
         if (cudaGetDevice(&current_id) != cudaSuccess) {
             gpu.select();
 
+#ifdef __HIPCC__
+            (void)cudaFree(partial_twiddles);
+#if !defined(FEATURE_BABY_BEAR) && !defined(FEATURE_GOLDILOCKS)
+            (void)cudaFree(radix9_twiddles_9);
+            (void)cudaFree(radix8_twiddles_8);
+            (void)cudaFree(radix7_twiddles_7);
+            (void)cudaFree(radix6_twiddles_6);
+#else
+            (void)cudaFree(plus_one_twiddles);
+#endif
+            (void)cudaFree(twiddles[4]);
+#else
             (void)cudaFreeAsync(partial_twiddles, gpu[2]);
 #if !defined(FEATURE_BABY_BEAR) && !defined(FEATURE_GOLDILOCKS)
             (void)cudaFreeAsync(radix9_twiddles_9, gpu[1]);
@@ -300,6 +312,7 @@ public:
             (void)cudaFreeAsync(plus_one_twiddles, gpu[1]);
 #endif
             (void)cudaFreeAsync(twiddles[4], gpu[0]);
+#endif
 
             (void)cudaSetDevice(current_id);
         }

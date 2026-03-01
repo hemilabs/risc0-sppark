@@ -12,7 +12,13 @@
 #include <util/rusterror.h>
 #include <util/gpu_t.cuh>
 
+#ifdef __HIPCC__
+// On AMD, __noinline__ function call generates costly VGPR save/restore.
+// Use inline asm barrier instead - acts as scheduling fence without call overhead.
+# define noop() do { asm volatile("s_nop 0" ::: "memory"); } while(0)
+#else
 __device__ __noinline__ static void noop() { asm(""); }
+#endif
 
 #include "parameters.cuh"
 #include "kernels.cu"

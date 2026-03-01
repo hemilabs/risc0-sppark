@@ -70,11 +70,26 @@ public:
 
     inline void* Dmalloc(size_t sz) const
     {   void *d_ptr;
+#ifdef __HIPCC__
+        // HIP async memory pool is unreliable on RDNA4 (gfx1201) — use
+        // synchronous allocation to avoid non-deterministic illegal memory
+        // access errors.
+        CUDA_OK(cudaStreamSynchronize(stream));
+        CUDA_OK(cudaMalloc(&d_ptr, sz));
+#else
         CUDA_OK(cudaMallocAsync(&d_ptr, sz, stream));
+#endif
         return d_ptr;
     }
     inline void Dfree(void* d_ptr) const
-    {   CUDA_OK(cudaFreeAsync(d_ptr, stream));   }
+    {
+#ifdef __HIPCC__
+        CUDA_OK(cudaStreamSynchronize(stream));
+        CUDA_OK(cudaFree(d_ptr));
+#else
+        CUDA_OK(cudaFreeAsync(d_ptr, stream));
+#endif
+    }
 
     template<typename T>
     inline void bzero(T* dst, size_t nelems) const
@@ -264,6 +279,10 @@ public:
         for (auto& f : flipflop)
             f.sync();
     }
+
+    // Sync only the primary (zero) stream — use when flipflop streams are idle
+    inline void sync_zero() const
+    {   zero.sync();   }
 };
 
 template<typename T> class gpu_ptr_t {
@@ -286,7 +305,11 @@ public:
             (void)cudaGetDevice(&current_id);
             if (current_id != ptr->real_id)
                 (void)cudaSetDevice(ptr->real_id);
+#ifdef __HIPCC__
+            (void)cudaFree(ptr->ptr);
+#else
             (void)cudaFreeAsync(ptr->ptr, nullptr);
+#endif
             if (current_id != ptr->real_id)
                 (void)cudaSetDevice(current_id);
             delete ptr;
@@ -336,7 +359,11 @@ public:
     {
         if (nelems) {
             size_t n = (nelems+WARP_SZ-1) & ((size_t)0-WARP_SZ);
+#ifdef __HIPCC__
+            CUDA_OK(cudaMalloc(&d_ptr, n * sizeof(T)));
+#else
             CUDA_OK(cudaMallocAsync(&d_ptr, n * sizeof(T), s));
+#endif
             d_len_owned = (nelems << 1) | 1;
         }
     }
@@ -348,8 +375,12 @@ public:
     ~dev_ptr_t()
     {
         if (d_ptr != nullptr && (d_len_owned&1)) {
+#ifdef __HIPCC__
+            (void)cudaFree((void*)d_ptr);
+#else
             if (stream) (void)cudaFreeAsync((void*)d_ptr, stream);
             else        (void)cudaFree((void*)d_ptr);
+#endif
         }
     }
 
