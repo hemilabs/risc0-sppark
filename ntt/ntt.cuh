@@ -105,7 +105,12 @@ private:
 
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
+#ifdef __HIPCC__
+        // AMD: use 2-pass split up to lg=20 (see GS_NTT comment above).
+        } else if (lg_domain_size <= 20) {
+#else
         } else if (lg_domain_size <= 18) {
+#endif
             int step = lg_domain_size / 2;
             params.step(step + lg_domain_size % 2);
             params.step(step);
@@ -138,7 +143,14 @@ private:
 
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
+#ifdef __HIPCC__
+        // AMD: use 2-pass split up to lg=20 to reduce first-pass memory
+        // stride from 2^12=16KB (3-pass) to 2^10=4KB (2-pass), and
+        // eliminate one full DRAM round-trip (2 vs 3 passes).
+        } else if (lg_domain_size <= 20) {
+#else
         } else if (lg_domain_size <= 18) {
+#endif
             int step = lg_domain_size / 2;
             params.step(step);
             params.step(step + lg_domain_size % 2);

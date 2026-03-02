@@ -3,7 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 template<int z_count, bool coalesced = false, class fr_t>
+#ifdef __HIPCC__
+__launch_bounds__(512, 1)
+#else
 __launch_bounds__(768, 1)
+#endif
 __global__
 void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
              const unsigned int stage, const unsigned int iterations,

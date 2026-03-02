@@ -136,7 +136,7 @@ void breakdown(vec2d_t<uint32_t> digits, const scalar_t scalars[], size_t len,
 #  define LARGE_L1_CODE_CACHE 0
 #  ifndef ACCUMULATE_NTHREADS
 #   ifdef __HIPCC__
-#    define ACCUMULATE_NTHREADS 64
+#    define ACCUMULATE_NTHREADS 256
 #   else
 #    define ACCUMULATE_NTHREADS (bucket_t::degree == 1 ? 384 : 256)
 #   endif
