@@ -13,6 +13,13 @@
 # endif
 #endif
 
+/*
+ * Disable native ROCm 7.2+ warp sync builtins (__ballot_sync, __shfl_sync,
+ * __activemask, etc.) so that our own polyfills below — which correctly
+ * partition 64-wide wavefronts into virtual 32-lane warps — are used instead.
+ */
+#define HIP_DISABLE_WARP_SYNC_BUILTINS
+
 #include <hip/hip_runtime.h>
 #ifdef NDEBUG
 # define assert(e) (void)(e)
@@ -169,10 +176,15 @@ cudaLaunchCooperativeKernel(const T* func, dim3 gridDim, dim3 blockDim,
                                       stream);
 }
 
-// ROCm 7.2+ provides native __syncwarp in amd_warp_sync_functions.h
-#if !defined(HIP_VERSION) || HIP_VERSION < 70200000
 static inline __device__ void __syncwarp() { asm volatile(""); }
-#endif
+
+/*
+ * Provide __activemask() that returns a 32-bit virtual-warp mask,
+ * since the native ROCm 7.2 version is disabled by
+ * HIP_DISABLE_WARP_SYNC_BUILTINS above.
+ */
+__device__ __forceinline__
+static unsigned long long __activemask() { return __ballot(true); }
 
 /*
  * To match CUDA, the 3-argument polyfills below are designed to produce
@@ -309,10 +321,12 @@ static T __shfl_xor_sync(uint32_t mask, const T& src, int laneMask, int warpsz)
 
 /*
  * Mimic CUDA __ballot_sync by "splitting" wider wavefronts to halves.
- * ROCm 7.2+ provides native __ballot_sync in amd_warp_sync_functions.h;
- * guard to avoid ambiguous overload.
+ * We always provide these non-template overloads so that code using
+ * virtual WARP_SZ=32 gets the correct per-half ballot result, even on
+ * ROCm 7.2+ where the native __ballot_sync template returns a full
+ * 64-bit mask.  Non-template overloads are preferred over the native
+ * template during overload resolution, so there is no ambiguity.
  */
-#if !defined(HIP_VERSION) || HIP_VERSION < 70200000
 __device__ __forceinline__
 static uint32_t __ballot_sync(uint32_t mask, bool predicate)
 {
@@ -327,7 +341,22 @@ static uint32_t __ballot_sync(uint32_t mask, bool predicate)
         return (uint32_t)ret;
     }
 }
-#endif
+
+/* Overload for ROCm 7.2+ where __activemask() returns unsigned long long. */
+__device__ __forceinline__
+static uint32_t __ballot_sync(unsigned long long mask, bool predicate)
+{
+    (void)mask;
+
+    uint64_t ret = __ballot(predicate);
+
+    if (__AMDGCN_WAVEFRONT_SIZE == 64) {
+        return (uint32_t)((threadIdx.x & WARP_SZ) ? ret>>32 : ret);
+    } else {
+        asm("" : "+v"(ret)); /* work around[?] a compiler bug */
+        return (uint32_t)ret;
+    }
+}
 
 #ifdef NDEBUG
 # undef assert

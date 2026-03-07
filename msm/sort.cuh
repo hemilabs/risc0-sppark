@@ -51,15 +51,38 @@ void grid_sync_atomic(uint32_t* sync_data, uint32_t num_blocks_x)
         volatile uint32_t* sense = (volatile uint32_t*)&sync_data[blockIdx.y * 2 + 1];
 
         uint32_t old_sense = *sense;
+#ifdef __HIP_DEVICE_COMPILE__
+        // On MI300X (multi-XCD), __threadfence() only provides agent-scope
+        // (single-XCD) L2 coherence (buffer_wbl2/inv sc1). We need system-
+        // scope fencing (sc0 sc1) to ensure writes are visible across all
+        // XCDs before announcing arrival at the barrier.
+        __threadfence_system();
+#else
         __threadfence();
+#endif
         uint32_t val = atomicAdd(arrive, 1);
         if (val == num_blocks_x - 1) {
             *arrive = 0;
+#ifdef __HIP_DEVICE_COMPILE__
+            __threadfence_system();
+#else
             __threadfence();
+#endif
             atomicExch((uint32_t*)sense, 1 - old_sense);
+#ifdef __HIP_DEVICE_COMPILE__
+            // Flush the atomicExch write (which uses agent scope by default)
+            // and invalidate local L2 cache so subsequent reads after the
+            // barrier see data written by blocks on other XCDs.
+            __threadfence_system();
+#endif
         } else {
             while (*sense == old_sense)
                 ;
+#ifdef __HIP_DEVICE_COMPILE__
+            // Invalidate local L2 cache so subsequent reads after the
+            // barrier see data written by blocks on other XCDs.
+            __threadfence_system();
+#endif
         }
     }
     __syncthreads();

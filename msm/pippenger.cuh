@@ -153,10 +153,12 @@ void breakdown(vec2d_t<uint32_t> digits, const scalar_t scalars[], size_t len,
 
 // On HIP/RDNA4, the integrate kernel with 256-bit EC arithmetic needs
 // many VGPRs. Use moderate block size for latency hiding.
-#ifdef __HIPCC__
-# define MSM_INTEGRATE_NTHREADS 128
-#else
-# define MSM_INTEGRATE_NTHREADS MSM_NTHREADS
+#ifndef MSM_INTEGRATE_NTHREADS
+# ifdef __HIPCC__
+#  define MSM_INTEGRATE_NTHREADS 128
+# else
+#  define MSM_INTEGRATE_NTHREADS MSM_NTHREADS
+# endif
 #endif
 #ifndef MSM_NSTREAMS
 # define MSM_NSTREAMS 8
@@ -423,9 +425,9 @@ void breakdown<scalar_t>(vec2d_t<uint32_t> digits, const scalar_t scalars[],
 #endif
 
 #include <vector>
+#include <cstdio>
 #ifdef MSM_PROFILE
 #include <chrono>
-#include <cstdio>
 #endif
 
 #include <util/exception.cuh>
@@ -548,6 +550,10 @@ private:
         uint32_t grid_size = gpu.sm_count() / 3;
         while (grid_size & (grid_size - 1))
             grid_size -= (grid_size & (0 - grid_size));
+
+        // sort_row decomposes warp lanes by gridDim.x, so gridDim.x <= WARP_SZ
+        if (grid_size > WARP_SZ)
+            grid_size = WARP_SZ;
         breakdown<<<gpu.sm_count(), 1024, sizeof(scalar_t)*1024, gpu[2]>>>(
             d_digits, d_scalars, len, nwins, wbits, mont
         );
