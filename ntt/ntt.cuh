@@ -30,7 +30,7 @@ public:
     enum class Type { standard, coset };
     enum class Algorithm { GS, CT };
 
-protected:
+public:
     static void bit_rev(fr_t* d_out, const fr_t* d_inp,
                         uint32_t lg_domain_size, stream_t& stream)
     {
@@ -41,8 +41,8 @@ protected:
         const uint32_t Z_COUNT = 256 / sizeof(fr_t);
         const uint32_t warpSize = gpu_props(stream).warpSize;
         const uint32_t bsize = Z_COUNT>warpSize ? Z_COUNT : warpSize;
-#if defined(__HIPCC__) && __AMDGCN_WAVEFRONT_SIZE == 64
-        const uint32_t lg_switch = 17;  // CDNA (wave64)
+#ifdef __SPPARK_AMD_CDNA__
+        const uint32_t lg_switch = 17;  // CDNA (wave64): no 96KB shared memory trick
 #else
         const uint32_t lg_switch = 32;  // NVIDIA and RDNA (wave32)
 #endif
@@ -106,7 +106,9 @@ private:
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
 #ifdef __HIPCC__
-        // AMD: use 2-pass split up to lg=20 (see GS_NTT comment above).
+        // AMD (all architectures): 2-pass up to lg=20 eliminates one DRAM
+        // round-trip. Working set (4MB at lg=20) fits in L2 on every AMD
+        // GPU (RDNA 4MB+, CDNA 8-256MB). See GS_NTT comment.
         } else if (lg_domain_size <= 20) {
 #else
         } else if (lg_domain_size <= 18) {
@@ -144,9 +146,10 @@ private:
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
 #ifdef __HIPCC__
-        // AMD: use 2-pass split up to lg=20 to reduce first-pass memory
-        // stride from 2^12=16KB (3-pass) to 2^10=4KB (2-pass), and
-        // eliminate one full DRAM round-trip (2 vs 3 passes).
+        // AMD (all architectures): 2-pass up to lg=20. Halves first-pass
+        // stride from 2^12=16KB to 2^10=4KB and eliminates one full DRAM
+        // round-trip. Benefits both RDNA (small L2, lower BW) and CDNA
+        // (large L2 but fewer passes = less total compute).
         } else if (lg_domain_size <= 20) {
 #else
         } else if (lg_domain_size <= 18) {

@@ -14,6 +14,24 @@
 #endif
 
 /*
+ * AMD GPU architecture classification macros.
+ *
+ * __SPPARK_AMD_CDNA__  - CDNA/GCN5 (gfx9xx: MI100/MI200/MI300)
+ *                        Wave64, large L2/Infinity Cache, HBM.
+ * __SPPARK_AMD_RDNA__  - RDNA (gfx10xx/11xx/12xx: RX 5000-9000 series)
+ *                        Wave32, smaller L2, consumer GPUs.
+ *
+ * Derived from compiler-builtin __GFX*__ family macros (ROCm 5.x+).
+ * Individual target macros (__gfx942__, __gfx1201__, etc.) remain
+ * available for fine-grained tuning.
+ */
+#ifdef __GFX9__
+# define __SPPARK_AMD_CDNA__
+#elif defined(__GFX10__) || defined(__GFX11__) || defined(__GFX12__)
+# define __SPPARK_AMD_RDNA__
+#endif
+
+/*
  * Disable native ROCm 7.2+ warp sync builtins (__ballot_sync, __shfl_sync,
  * __activemask, etc.) so that our own polyfills below — which correctly
  * partition 64-wide wavefronts into virtual 32-lane warps — are used instead.
