@@ -4,7 +4,7 @@
 
 template<int z_count, bool coalesced = false, class fr_t>
 #ifdef __HIPCC__
-__launch_bounds__(512, 1)
+__launch_bounds__(1024, 1)
 #else
 __launch_bounds__(768, 1)
 #endif
@@ -19,7 +19,7 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
 {
 #if (__CUDACC_VER_MAJOR__-0) >= 11 || defined(__clang__)
     __builtin_assume(lg_domain_size <= MAX_LG_DOMAIN_SIZE);
-    __builtin_assume(radix <= 10);
+    __builtin_assume(radix <= 11);
     __builtin_assume(iterations <= radix);
     __builtin_assume(stage <= lg_domain_size - iterations);
 #endif
@@ -209,7 +209,7 @@ public:
 
     void step(int iterations)
     {
-        assert(iterations <= 10);
+        assert(iterations <= 11);
 
         const int radix = iterations < 6 ? 6 : iterations;
 

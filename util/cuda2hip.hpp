@@ -194,7 +194,9 @@ cudaLaunchCooperativeKernel(const T* func, dim3 gridDim, dim3 blockDim,
                                       stream);
 }
 
-static inline __device__ void __syncwarp() { asm volatile(""); }
+static inline __device__ void __syncwarp()
+{   __builtin_amdgcn_wave_barrier();
+}
 
 /*
  * Provide __activemask() that returns a 32-bit virtual-warp mask,

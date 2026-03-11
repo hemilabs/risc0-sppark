@@ -106,10 +106,14 @@ private:
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
 #ifdef __HIPCC__
-        // AMD (all architectures): 2-pass up to lg=20 eliminates one DRAM
-        // round-trip. Working set (4MB at lg=20) fits in L2 on every AMD
-        // GPU (RDNA 4MB+, CDNA 8-256MB). See GS_NTT comment.
+# if defined(FEATURE_BABY_BEAR) || defined(FEATURE_GOLDILOCKS)
+        // AMD narrow fields: CT 2-pass up to lg=21.
+        // lg=22 radix-11 CT has a HIP compiler bug (wrong results even at Z_COUNT=1).
+        } else if (lg_domain_size <= 21) {
+# else
+        // AMD wide fields: 2-pass up to lg=20 (radix-10 max).
         } else if (lg_domain_size <= 20) {
+# endif
 #else
         } else if (lg_domain_size <= 18) {
 #endif
@@ -146,11 +150,14 @@ private:
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
 #ifdef __HIPCC__
-        // AMD (all architectures): 2-pass up to lg=20. Halves first-pass
-        // stride from 2^12=16KB to 2^10=4KB and eliminates one full DRAM
-        // round-trip. Benefits both RDNA (small L2, lower BW) and CDNA
-        // (large L2 but fewer passes = less total compute).
+# if defined(FEATURE_BABY_BEAR) || defined(FEATURE_GOLDILOCKS)
+        // AMD narrow fields: 2-pass up to lg=21.
+        // lg=22 radix-11 is broken on HIP (VGPR spill corruption at 1024-thread blocks).
+        } else if (lg_domain_size <= 21) {
+# else
+        // AMD wide fields: 2-pass up to lg=20 (radix-10 max).
         } else if (lg_domain_size <= 20) {
+# endif
 #else
         } else if (lg_domain_size <= 18) {
 #endif

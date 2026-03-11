@@ -104,30 +104,34 @@ void generate_partial_twiddles(fr_t (*roots)[WINDOW_SIZE],
 #endif
 }
 
-template<class fr_t> __launch_bounds__(512) __global__
-void generate_all_twiddles(fr_t* d_radixX_twiddles, const fr_t root10)
+template<class fr_t> __launch_bounds__(1024) __global__
+void generate_all_twiddles(fr_t* d_radixX_twiddles, const fr_t root_of_unity)
 {
 #if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
 #else
-    fr_t root = root10^threadIdx.x;
+    fr_t root = root_of_unity^threadIdx.x;
 
-    d_radixX_twiddles[threadIdx.x] = root;
+    d_radixX_twiddles[threadIdx.x] = root;           /* radix11: 1024 */
+
+    d_radixX_twiddles += 1024;
+    if (threadIdx.x % 2 == 0)
+        d_radixX_twiddles[threadIdx.x/2] = root;     /* radix10: 512 */
 
     d_radixX_twiddles += 512;
-    if (threadIdx.x % 2 == 0)
-        d_radixX_twiddles[threadIdx.x/2] = root;
+    if (threadIdx.x % 4 == 0)
+        d_radixX_twiddles[threadIdx.x/4] = root;     /* radix9: 256 */
 
     d_radixX_twiddles += 256;
-    if (threadIdx.x % 4 == 0)
-        d_radixX_twiddles[threadIdx.x/4] = root;
+    if (threadIdx.x % 8 == 0)
+        d_radixX_twiddles[threadIdx.x/8] = root;     /* radix8: 128 */
 
     d_radixX_twiddles += 128;
-    if (threadIdx.x % 8 == 0)
-        d_radixX_twiddles[threadIdx.x/8] = root;
+    if (threadIdx.x % 16 == 0)
+        d_radixX_twiddles[threadIdx.x/16] = root;    /* radix7: 64 */
 
     d_radixX_twiddles += 64;
-    if (threadIdx.x % 16 == 0)
-        d_radixX_twiddles[threadIdx.x/16] = root;
+    if (threadIdx.x % 32 == 0)
+        d_radixX_twiddles[threadIdx.x/32] = root;    /* radix6: 32 */
 #endif
 }
 
@@ -200,7 +204,7 @@ private:
 public:
     fr_t (*partial_twiddles)[WINDOW_SIZE];
 
-    fr_t* twiddles[5];
+    fr_t* twiddles[6];
 
     fr_t (*partial_group_gen_powers)[WINDOW_SIZE]; // for LDE
 
@@ -228,18 +232,19 @@ public:
         const fr_t* roots = inverse ? inverse_roots_of_unity
                                     : forward_roots_of_unity;
 
-        const size_t blob_sz = 512 + 256 + 128 + 64 + 32;
+        const size_t blob_sz = 1024 + 512 + 256 + 128 + 64 + 32;
 
         fr_t* blob = reinterpret_cast<decltype(blob)>
                      (gpu[0].Dmalloc(blob_sz * sizeof(fr_t)));
 
-        twiddles[4] = blob;                 /* radix10_twiddles */
+        twiddles[5] = blob;                 /* radix11_twiddles */
+        twiddles[4] = twiddles[5] + 1024;   /* radix10_twiddles */
         twiddles[3] = twiddles[4] + 512;    /* radix9_twiddles */
         twiddles[2] = twiddles[3] + 256;    /* radix8_twiddles */
         twiddles[1] = twiddles[2] + 128;    /* radix7_twiddles */
         twiddles[0] = twiddles[1] + 64;     /* radix6_twiddles */
 
-        generate_all_twiddles<<<1, 512, 0, gpu[0]>>>(blob, roots[10]);
+        generate_all_twiddles<<<1, 1024, 0, gpu[0]>>>(blob, roots[11]);
         CUDA_OK(cudaGetLastError());
 
         /* copy radix6_twiddles to the constant segment */
@@ -300,7 +305,7 @@ public:
 #else
             (void)cudaFree(plus_one_twiddles);
 #endif
-            (void)cudaFree(twiddles[4]);
+            (void)cudaFree(twiddles[5]);
 #else
             (void)cudaFreeAsync(partial_twiddles, gpu[2]);
 #if !defined(FEATURE_BABY_BEAR) && !defined(FEATURE_GOLDILOCKS)
@@ -311,7 +316,7 @@ public:
 #else
             (void)cudaFreeAsync(plus_one_twiddles, gpu[1]);
 #endif
-            (void)cudaFreeAsync(twiddles[4], gpu[0]);
+            (void)cudaFreeAsync(twiddles[5], gpu[0]);
 #endif
 
             (void)cudaSetDevice(current_id);
