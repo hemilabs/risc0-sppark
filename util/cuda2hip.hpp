@@ -120,11 +120,14 @@ static inline cudaError_t cudaMalloc(T** devPtr, size_t size)
 {   return hipMalloc(devPtr, size);   }
 static const auto cudaFree                  = hipFree;
 
+// HIP async memory pool (hipMallocAsync/hipFreeAsync) causes illegal memory
+// access errors on RDNA4 (gfx1201). Use synchronous hipMalloc/hipFree instead.
 template<typename T>
 static inline cudaError_t cudaMallocAsync(T** devPtr, size_t size,
                                           cudaStream_t stream)
-{   return hipMallocAsync(devPtr, size, stream);   }
-static const auto cudaFreeAsync             = hipFreeAsync;
+{   (void)stream; return hipMalloc(devPtr, size);   }
+static inline cudaError_t cudaFreeAsync(void* devPtr, cudaStream_t stream)
+{   (void)stream; return hipFree(devPtr);   }
 
 using cudaMemPool_t                        = hipMemPool_t;
 static const auto cudaDeviceGetDefaultMemPool = hipDeviceGetDefaultMemPool;
@@ -195,7 +198,17 @@ cudaLaunchCooperativeKernel(const T* func, dim3 gridDim, dim3 blockDim,
 }
 
 static inline __device__ void __syncwarp()
-{   __builtin_amdgcn_wave_barrier();
+{   // CUDA's __syncwarp() both reconverges the warp AND orders shared-memory
+    // (LDS) accesses across lanes. __builtin_amdgcn_wave_barrier() only
+    // reconverges — it does NOT emit the `s_waitcnt lgkmcnt(0)` that makes prior
+    // LDS writes visible to subsequent LDS reads by other lanes. The NTT narrow
+    // kernels' shared-memory transpose (write xchg -> __syncwarp -> cross-lane
+    // read xchg) therefore races on RDNA, producing intermittent wrong NTT
+    // output (~%-level, nondeterministic) and invalid multi-segment proofs.
+    // Add a workgroup-scoped acquire/release fence (lowers to the LDS waitcnt)
+    // before reconverging so the shared-memory exchange is ordered.
+    __builtin_amdgcn_fence(__ATOMIC_ACQ_REL, "workgroup");
+    __builtin_amdgcn_wave_barrier();
 }
 
 /*
