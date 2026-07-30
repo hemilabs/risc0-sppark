@@ -1,0 +1,42 @@
+// -*- C++ -*-
+// sppark-local shim header: <cuda/std/array>
+//
+// risc0's rv32im / keccak / recursion CUDA kernels `#include <cuda/std/array>` and use
+// `::cuda::std::array` (and nothing else from libcudacxx). The sppark repo root is placed on
+// the kernel include path by risc0's *-sys build.rs (`.include(&sppark_root)`), so this file
+// is what that include resolves to.
+//
+//  * Under NVCC/CUDA: forward to the real libcudacxx header via #include_next, so the genuine
+//    cuda::std::array is used and behaviour is unchanged.
+//  * Under HIPCC/ROCm: there is no libcudacxx, so alias std::array into namespace cuda::std.
+//
+// This file is UNTRACKED/local by design — see RESUME_JUL25.md §4 ("cuda/std/array (untracked
+// shim header)"), which lists it as one of the local changes that must ride along with
+// vendor/risc0-sppark/. Do not delete it: without it the ROCm build fails to compile the
+// circuit kernels.
+
+#ifndef SPPARK_SHIM_CUDA_STD_ARRAY_
+#define SPPARK_SHIM_CUDA_STD_ARRAY_
+
+#ifdef __HIPCC__
+
+#include <array>
+#include <cstddef>
+
+namespace cuda {
+namespace std {
+using ::std::array;
+using ::std::get;
+using ::std::size_t;
+using ::std::tuple_element;
+using ::std::tuple_size;
+} // namespace std
+} // namespace cuda
+
+#else // CUDA / nvcc — defer to the real libcudacxx header
+
+#include_next <cuda/std/array>
+
+#endif
+
+#endif // SPPARK_SHIM_CUDA_STD_ARRAY_
