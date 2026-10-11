@@ -100,8 +100,12 @@ void bit_rev_permutation_z(fr_t* out, const fr_t* in, uint32_t lg_domain_size)
                 regs[i].zero();
         }
 
+        // GCC-style asm, which nvcc rejects when parsing for an MSVC host
+        // compiler. It is only an optimization barrier for the HIP device pass.
+#if !defined(_MSC_VER) || defined(__HIPCC__)
         asm("" : "+v"(base_idx));
         asm("" : "+v"(base_rev));
+#endif
 #endif
 
         (Z_COUNT > warpSize) ? __syncthreads() : __syncwarp();
