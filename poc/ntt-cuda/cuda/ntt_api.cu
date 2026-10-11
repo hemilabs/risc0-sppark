@@ -218,6 +218,28 @@ RustError::by_value ntt_batch_download_and_free(size_t device_id,
 // caller-provided CUstream. No PCIe transfers, no implicit sync.
 // ===================================================================
 
+// Run `work` on this GPU's own stream, ordered after everything already queued on the caller's
+// `cuda_stream` and before anything queued there afterwards, still with no host sync.
+//
+// `stream_t` can no longer wrap a caller's stream: its non-owning constructor was removed (5e4c983)
+// because the field it needed changed the struct's layout for every file that includes gpu_t.cuh.
+// Two events carry the ordering instead.
+template<typename Work>
+static void on_callers_stream(cudaStream_t cuda_stream, const gpu_t& gpu, Work work)
+{
+    stream_t& stream = gpu[0];
+    struct event_t {
+        cudaEvent_t e;
+        event_t()  { CUDA_OK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming)); }
+        ~event_t() { (void)cudaEventDestroy(e); }
+    } ready, done;
+    CUDA_OK(cudaEventRecord(ready.e, cuda_stream));
+    CUDA_OK(cudaStreamWaitEvent(stream, ready.e, 0));
+    work(stream);
+    CUDA_OK(cudaEventRecord(done.e, stream));
+    CUDA_OK(cudaStreamWaitEvent(cuda_stream, done.e, 0));
+}
+
 // Forward NTT, RN ordering (bit-reversed in -> natural out, CT algorithm)
 SPPARK_FFI
 RustError::by_value sppark_batch_NTT(cudaStream_t cuda_stream, fr_t* d_inout,
@@ -230,13 +252,14 @@ RustError::by_value sppark_batch_NTT(cudaStream_t cuda_stream, fr_t* d_inout,
     try {
         (void)cudaGetLastError();  // clear any stale errors
         auto& gpu = select_gpu(-1);
-        stream_t stream(cuda_stream, gpu.id());
         size_t domain_size = (size_t)1 << lg_domain_size;
-        for (uint32_t i = 0; i < poly_count; i++) {
-            NTT::Base_dev_ptr(stream, d_inout + i * domain_size,
-                              lg_domain_size, NTT::InputOutputOrder::RN,
-                              NTT::Direction::forward, NTT::Type::standard);
-        }
+        on_callers_stream(cuda_stream, gpu, [&](stream_t& stream) {
+            for (uint32_t i = 0; i < poly_count; i++) {
+                NTT::Base_dev_ptr(stream, d_inout + i * domain_size,
+                                  lg_domain_size, NTT::InputOutputOrder::RN,
+                                  NTT::Direction::forward, NTT::Type::standard);
+            }
+        });
     } catch (const cuda_error& e) {
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
         return RustError{e.code(), e.what()};
@@ -260,13 +283,14 @@ RustError::by_value sppark_batch_iNTT(cudaStream_t cuda_stream, fr_t* d_inout,
     try {
         (void)cudaGetLastError();  // clear any stale errors
         auto& gpu = select_gpu(-1);
-        stream_t stream(cuda_stream, gpu.id());
         size_t domain_size = (size_t)1 << lg_domain_size;
-        for (uint32_t i = 0; i < poly_count; i++) {
-            NTT::Base_dev_ptr(stream, d_inout + i * domain_size,
-                              lg_domain_size, NTT::InputOutputOrder::NR,
-                              NTT::Direction::inverse, NTT::Type::standard);
-        }
+        on_callers_stream(cuda_stream, gpu, [&](stream_t& stream) {
+            for (uint32_t i = 0; i < poly_count; i++) {
+                NTT::Base_dev_ptr(stream, d_inout + i * domain_size,
+                                  lg_domain_size, NTT::InputOutputOrder::NR,
+                                  NTT::Direction::inverse, NTT::Type::standard);
+            }
+        });
     } catch (const cuda_error& e) {
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
         return RustError{e.code(), e.what()};
@@ -439,12 +463,14 @@ RustError::by_value sppark_batch_bit_reverse(cudaStream_t cuda_stream,
     try {
         (void)cudaGetLastError();  // clear any stale errors
         auto& gpu = select_gpu(-1);
-        stream_t stream(cuda_stream, gpu.id());
         size_t domain_size = (size_t)1 << lg_domain_size;
-        for (uint32_t i = 0; i < poly_count; i++) {
-            NTT::bit_rev_dev_ptr(stream, d_inout + i * domain_size,
-                                 lg_domain_size);
-        }
+        on_callers_stream(cuda_stream, gpu, [&](stream_t& stream) {
+            for (uint32_t i = 0; i < poly_count; i++) {
+                // In place, as ntt.cuh itself does; bit_rev_dev_ptr went with a22fa9a.
+                fr_t* d_poly = d_inout + i * domain_size;
+                NTT::bit_rev(d_poly, d_poly, lg_domain_size, stream);
+            }
+        });
     } catch (const cuda_error& e) {
 #ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
         return RustError{e.code(), e.what()};
