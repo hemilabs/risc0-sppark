@@ -7,6 +7,10 @@
 
 #include "affine_t.hpp"
 
+#ifdef __CUDACC__
+# pragma nv_diag_suppress 284   // NULL reference is not allowed
+#endif
+
 template<class field_t, class field_h = typename field_t::mem_t,
          const field_h* a4 = nullptr>
 class jacobian_t {
@@ -357,6 +361,12 @@ public:
         B += B;                 /* D = 2*((X1+B)^2-A-C) */
 
         A += A<<1;              /* E = 3*A */
+        if (a4 != nullptr) {
+            p3.X = p1.Z^2;      /* Z1^4 [borrow p3.X] */
+            p3.X = p3.X^2;
+            p3.X *= *a4;
+            A += p3.X;          /* E += a*Z1^4 */
+        }
 
         p3.X = A^2;             /* F = E^2 */
         p3.X -= B;
@@ -418,6 +428,11 @@ public:
                 B += B;             /* D = 2*((X1+B)^2-A-C) */
 
                 A += A<<1;          /* E = 3*A */
+                if (a4 != nullptr) {
+                    p3.X = Z1Z1^2;  /* Z1^4 [borrow p3.X] */
+                    p3.X *= *a4;
+                    A += p3.X;      /* E += Z1^4*a4 */
+                }
 
                 p3.X = A^2;         /* F = E^2 */
                 p3.X -= B;
@@ -500,6 +515,9 @@ public:
                 B += B;             /* D = 2*((X1+B)^2-A-C) */
 
                 A += A<<1;          /* E = 3*A */
+                if (a4 != nullptr) {
+                    A += *a4;       /* E += a4 */
+                }
 
                 p3.X = A^2;         /* F = E^2 */
                 p3.X -= B;
@@ -567,4 +585,8 @@ public:
     friend inline bool operator!=(const jacobian_t& p1, const affine_t& p2)
     {   return !p1.eq(p2);   }
 };
+
+#ifdef __CUDACC__
+# pragma nv_diag_default 284
+#endif
 #endif

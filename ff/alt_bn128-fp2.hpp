@@ -146,7 +146,7 @@ public:
         auto b = shfl_xor(a);
         a += b;
 #if defined(__CUDA_ARCH__)
-        a = ct_inverse_mod_x(a);    // 1/(x[0]^2 + x[1]^2)
+        a = vt_inverse_mod_x(a);    // 1/(x[0]^2 + x[1]^2)
 #else
         a = a.reciprocal();         // Fermat-based inverse on HIP
 #endif

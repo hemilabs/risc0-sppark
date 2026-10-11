@@ -33,7 +33,7 @@
 template<const size_t N, const uint32_t MOD[(N+31)/32], const uint32_t& M0,
          const uint32_t RR[(N+31)/32], const uint32_t ONE[(N+31)/32],
          const uint32_t MODx[(N+31)/32] = MOD>
-class __align__(((N+63)/64)&1 ? 8 : 16) mont_t {
+class __align__(((N+127)/128)&1 ? (((N+63)/64)&1 ? 8 : 16) : 32) mont_t {
 public:
     static const size_t nbits = N;
     static constexpr size_t __device__ bit_length() { return N; }
@@ -732,26 +732,24 @@ public:
 
         #pragma unroll
         for (size_t j = 0; j < len; j++, b_ptr += stride_b) {
-            mont_t b = *b_ptr;
-            tmp = a[j];
+            mont_t bj = *b_ptr;
+            mont_t aj = a[j];
             carry = 0;
 
             #pragma unroll
             for (i = 0; i < n; i += 2) {
-                uint32_t bi;
-
-                cmad_n(&even[i], &tmp[0], bi = b[i]);
+                cmad_n(&even[i], &aj[0], bj[i]);
                 asm("addc.u32 %0, %0, 0;" : "+r"(carry));
                 asm("add.cc.u32 %0, %0, %1; addc.u32 %1, 0, 0;"
                     : "+r"(odd[n+i-1]), "+r"(carry));
-                cmad_n(&odd[i], &tmp[1], bi);
+                cmad_n(&odd[i], &aj[1], bj[i]);
                 asm("addc.u32 %0, %0, 0;" : "+r"(carry));
 
-                cmad_n(&odd[i], &tmp[0], bi = b[i+1]);
+                cmad_n(&odd[i], &aj[0], bj[i+1]);
                 asm("addc.u32 %0, %0, 0;" : "+r"(carry));
                 asm("add.cc.u32 %0, %0, %1; addc.u32 %1, 0, 0;"
                     : "+r"(even[n+i+1]), "+r"(carry));
-                cmad_n(&even[i+2], &tmp[1], bi);
+                cmad_n(&even[i+2], &aj[1], bj[i+1]);
                 asm("addc.u32 %0, %0, 0;" : "+r"(carry));
             }
 
@@ -782,20 +780,29 @@ public:
 
 protected:
     template<typename vec_t>
-    static inline vec_t shfl_xor(const vec_t& a, uint32_t idx = 1)
+    static inline vec_t shfl_xor(const vec_t& a, uint32_t idx = 1,
+                                 uint32_t mask = 0xffffffff)
     {
         vec_t ret;
         for (size_t i = 0; i < sizeof(vec_t)/sizeof(uint32_t); i++)
-            ret[i] = __shfl_xor_sync(0xffffffff, a[i], idx);
+            ret[i] = __shfl_xor_sync(mask, a[i], idx);
         return ret;
     }
 
 private:
-    // Euclidean inversion based on https://eprint.iacr.org/2020/972
-    // and <blst>/src/no_asm.h.
+    // Non-constant-time Euclidean inversion inspired by
+    // https://eprint.iacr.org/2020/972.
 
     struct approx_t  { uint32_t lo, hi; };
     struct factorx_t { uint32_t f0, g0; };
+    class sfp_t {
+    private:
+        uint32_t even[n+1];
+    public:
+        inline sfp_t() {}
+        inline uint32_t& operator[](size_t i)               { return even[i]; }
+        inline const uint32_t& operator[](size_t i) const   { return even[i]; }
+    };
 
     static inline uint32_t lshift_2(uint32_t hi, uint32_t lo, uint32_t i)
     {
@@ -837,7 +844,8 @@ private:
         b ^= xorm;
     }
 
-    static inline factorx_t inner_loop_x(approx_t a, approx_t b)
+    static inline factorx_t inner_loop_x(approx_t a, approx_t b,
+                                         uint32_t mask = 0xffffffff)
     {
         const uint32_t tid = threadIdx.x&1;
         const uint32_t odd = 0 - tid;
@@ -889,7 +897,7 @@ private:
         // even thread needs |f0|,|g0|, odd - |g1|,|f1|, in this order
         cswap(fg0, fg1, odd);
 
-        fg1 = __shfl_xor_sync(0xffffffff, fg1, 1);
+        fg1 = __shfl_xor_sync(mask, fg1, 1);
 
         return factorx_t{fg0, fg1};
     }
@@ -997,6 +1005,42 @@ private:
         (void)cneg_v(a, even, neg);
     }
 
+    static inline void smul_n_shift_x(sfp_t& u, uint32_t f,
+                                      sfp_t& v, uint32_t g)
+    {
+        uint32_t even[n+1], odd[n];
+        uint32_t neg;
+
+        /* |u|*|f_| */
+        asm("shr.s32 %0, %1, 31;" : "=r"(neg) : "r"(f));
+        f = (f ^ neg) - neg;        /* ensure |f| is positive */
+        cneg_v(u, u, neg);
+        mul_n(&even[0], &u[0], f);
+        even[n] = u[n] * f;
+        mul_n(&odd[0],  &u[1], f);
+
+        /* |v|*|g_| */
+        asm("shr.s32 %0, %1, 31;" : "=r"(neg) : "r"(g));
+        g = (g ^ neg) - neg;        /* ensure |g| is positive */
+        cneg_v(v, v, neg);
+        cmad_n(&even[0], &v[0], g);
+        asm("madc.lo.u32 %0, %1, %2, %0;" : "+r"(even[n]) : "r"(v[n]), "r"(g));
+        cmad_n(&odd[0],  &v[1], g);
+
+        /* (|u|*|f_| + |v|*|g_|) >> k */
+        uint32_t mi = (even[0] * M0) & 0x3fffffff;
+
+        cmad_n(&even[0], MOD, mi);
+        asm("addc.u32 %0, %0, 0;" : "+r"(even[n]));
+        cmad_n(&odd[0], MOD+1, mi);
+
+        cadd_n(&even[1], &odd[0]);
+
+        for (size_t i=0; i<n; i++)
+            asm("shf.r.wrap.b32 %0, %1, %2, 32-2;" : "=r"(u[i]) : "r"(even[i]), "r"(even[i+1]));
+        asm("shr.s32 %0, %1, 32-2;" : "=r"(u[n]) : "r"(even[n]));
+    }
+
     static inline uint32_t smul_2x(wide_t& u, uint32_t f,
                                    wide_t& v, uint32_t g)
     {
@@ -1089,6 +1133,63 @@ protected:
         return ret;
     }
 
+    static inline mont_t vt_inverse_mod_x(const mont_t& inp)
+    {
+        if (N%32 != 0 && MOD == MODx) asm("trap;");
+
+        const uint32_t tid = threadIdx.x&1;
+
+        mont_t a_b = inp;
+
+        a_b.from();
+        a_b = csel(MOD, a_b, tid);
+
+        sfp_t u_v, v_u;
+
+        u_v[0] = tid^1;
+        v_u[0] = tid;
+        for (size_t i=1; i<=n; i++)
+            u_v[i] = v_u[i] = 0;
+
+        bool done;
+        #pragma unroll 1
+        do {
+            uint32_t mask = __activemask();
+            mont_t b_a = shfl_xor(a_b, 1, mask);
+            approx_t a_, b_;
+            ab_approximation_n(a_, a_b, b_, b_a);
+            auto fg = inner_loop_x(a_, b_, mask);
+            smul_n_shift_x(a_b, fg.f0, b_a, fg.g0);
+            smul_n_shift_x(u_v, fg.f0, v_u, fg.g0);
+            v_u = shfl_xor(u_v, 1, mask);
+            done = a_b.is_zero();
+            done = __shfl_sync(mask, done, threadIdx.x&~1);
+        } while (!done);
+
+        if (tid != 0)
+            v_u = u_v;
+
+        mont_t ret;
+
+        auto sign = 0 - v_u[n];     /* v_u[n] is 1, 0 or -1 */
+        v_u[n] |= sign;
+
+        for (size_t i=0; i<n; i++)
+            ret[i] = MODx[i] & v_u[n];
+
+        asm("shr.s32 %0, %0, 31;" : "+r"(sign));
+        asm("xor.b32 %0, %0, %1;" : "+r"(ret[0]) : "r"(sign));
+        asm("sub.u32 %0, %0, %1;" : "+r"(ret[0]) : "r"(sign));
+        for (size_t i=1; i<n; i++)
+            asm("xor.b32 %0, %0, %1;" : "+r"(ret[i]) : "r"(sign));
+
+        cadd_n(&ret[0], &v_u[0]);
+
+        ret.to();
+
+        return ret;
+    }
+
 public:
     inline mont_t reciprocal() const
     {
@@ -1096,7 +1197,7 @@ public:
         mont_t a = csel(ONE, even, a_zero);
         mont_t b = shfl_xor(a);
         a *= b;                     // a*b
-        a = ct_inverse_mod_x(a);    // 1/(a*b)
+        a = vt_inverse_mod_x(a);    // 1/(a*b)
         a *= b;                     // b/(a*b) == 1/a
         return czero(a, a_zero);
     }
