@@ -83,7 +83,9 @@ fn main() {
 
     let mut nvcc = cc::Build::new();
     nvcc.cuda(true);
-    nvcc.flag("-arch=sm_120");
+    // Native code for both comparison hosts: Ada (RTX 4090) and Blackwell (RTX 5090).
+    nvcc.flag("-gencode=arch=compute_89,code=sm_89");
+    nvcc.flag("-gencode=arch=compute_120,code=sm_120");
     #[cfg(not(target_env = "msvc"))]
     nvcc.flag("-Xcompiler").flag("-Wno-unused-function");
     nvcc.define("TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE", None);
@@ -100,5 +102,6 @@ fn main() {
     if let Some(include) = env::var_os("DEP_SPPARK_ROOT") {
         nvcc.include(include);
     }
-    nvcc.file("cuda/ntt_api.cu").compile("ntt_cuda");
+    nvcc.file("cuda/ntt_api.cu")
+        .compile("ntt_cuda");
 }

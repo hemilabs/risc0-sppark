@@ -31,6 +31,10 @@ sppark = { path = "../../rust" }
 [build-dependencies]
 cc = "^1.0.70"
 
+[[bench]]
+name = "ntt_bench"
+harness = false
+
 [dev-dependencies]
 rand = "^0"
 ark-std = "0.3.0"
