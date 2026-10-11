@@ -22,7 +22,7 @@ cuda-mobile = []
 
 [dependencies]
 blst = "~0.3.11"
-sppark = { package = "risc0-sppark", path = "../../rust" }
+sppark = { path = "../../rust" }
 rand = "0.8"
 rand_chacha = "0.3"
 ark-std = "0.3.0"
@@ -42,3 +42,24 @@ criterion = { version = "0.3", features = [ "html_reports" ] }
 [[bench]]
 name = "msm"
 harness = false
+
+# Examples written for BN254 alone; without this, building with any other curve fails on ark_bn254.
+[[example]]
+name = "check_sizes"
+required-features = ["bn254"]
+
+[[example]]
+name = "profile_g2"
+required-features = ["bn254"]
+
+[[example]]
+name = "profile_glv"
+required-features = ["bn254"]
+
+[[example]]
+name = "profile_preloaded"
+required-features = ["bn254"]
+
+[[example]]
+name = "test_glv_correctness"
+required-features = ["bn254"]
