@@ -97,25 +97,13 @@ fn main() {
     };
 
     if nvcc.is_ok() {
-        let mut nvcc = cc::Build::new();
-        nvcc.cuda(true);
-        nvcc.flag("-arch=sm_120");
-        nvcc.flag("-t0");
+        let mut nvcc: cc::Build = sppark::build::ccmd();
         if cfg!(feature = "quiet") {
             nvcc.flag("-diag-suppress=177"); // bug in the warning system.
         }
-        #[cfg(not(target_env = "msvc"))]
-        nvcc.flag("-Xcompiler").flag("-Wno-unused-function");
-        nvcc.define("TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE", None);
         nvcc.define(curve, None);
         if let Some(def) = cc_opt {
             nvcc.define(def, None);
-        }
-        if let Some(include) = env::var_os("DEP_BLST_C_SRC") {
-            nvcc.include(include);
-        }
-        if let Some(include) = env::var_os("DEP_SPPARK_ROOT") {
-            nvcc.include(include);
         }
         if let Ok(wbits) = env::var("MSM_WBITS") {
             nvcc.define("MSM_WBITS_OVERRIDE", Some(wbits.as_str()));

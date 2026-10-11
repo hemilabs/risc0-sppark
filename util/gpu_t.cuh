@@ -305,11 +305,7 @@ public:
             (void)cudaGetDevice(&current_id);
             if (current_id != ptr->real_id)
                 (void)cudaSetDevice(ptr->real_id);
-#ifdef __HIPCC__
             (void)cudaFree(ptr->ptr);
-#else
-            (void)cudaFreeAsync(ptr->ptr, nullptr);
-#endif
             if (current_id != ptr->real_id)
                 (void)cudaSetDevice(current_id);
             delete ptr;
