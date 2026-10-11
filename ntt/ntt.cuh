@@ -5,7 +5,13 @@
 #ifndef __SPPARK_NTT_NTT_CUH__
 #define __SPPARK_NTT_NTT_CUH__
 
+// Not again once `assert` is defined: risc0's groth16 includes this file inside
+// `namespace sppark::bn254`, and re-including MSVC's <assert.h> there declares a
+// host-only `sppark::bn254::_wassert` that shadows CUDA's host+device `::_wassert`
+// for the kernels below. (glibc guards that declaration; the UCRT does not.)
+#ifndef assert
 #include <cassert>
+#endif
 #include <iostream>
 
 #include <util/exception.cuh>
@@ -303,9 +309,11 @@ protected:
             block_size = 1024;
         }
 
+        // Named, not a bare braced list: MSVC will not convert a braced list to
+        // the `const launch_params_t&` parameter of this variadic template.
         stream.launch_coop(LDE_spread_distribute_powers,
-                        {dim3(num_blocks), dim3(block_size),
-                         sizeof(fr_t) * block_size},
+                        launch_params_t{dim3(num_blocks), dim3(block_size),
+                                        sizeof(fr_t) * block_size},
                         ext_domain_data, domain_data, gen_powers,
                         lg_domain_size, lg_blowup, perform_shift, ext_pow);
     }

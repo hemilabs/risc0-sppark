@@ -9,7 +9,10 @@ use std::process::Command;
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let mut base_dir = manifest_dir.join("sppark");
-    if !base_dir.exists() {
+    // `is_dir`, not `exists`: in a git checkout the `sppark` -> `..` symlink is
+    // written as a plain text file wherever symlinks aren't supported (e.g. cargo's
+    // libgit2 checkout on Windows), and that file exists.
+    if !base_dir.is_dir() {
         // Reach out to .., which is the root of the sppark repo.
         // Use an absolute path to avoid issues with relative paths
         // being treated as strings by `cc` and getting concatenated
