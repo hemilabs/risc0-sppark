@@ -12,21 +12,16 @@
 #include <util/rusterror.h>
 #include <util/gpu_t.cuh>
 
-#if defined(__NVCC__)
-# define noop()
-#elif defined(__HIPCC__)
-# pragma clang diagnostic push
-# pragma clang diagnostic ignored "-Wunused-function"
+#ifdef __HIPCC__
+// On AMD, __noinline__ function call generates costly VGPR save/restore.
+// Use inline asm barrier instead - acts as scheduling fence without call overhead.
+# define noop() do { asm volatile("s_nop 0" ::: "memory"); } while(0)
+#else
 __device__ __noinline__ static void noop() { asm(""); }
-# pragma clang diagnostic push
 #endif
 
 #include "parameters.cuh"
 #include "kernels.cu"
-
-#ifdef noop
-# undef noop
-#endif
 
 class NTT {
 public:
@@ -35,7 +30,7 @@ public:
     enum class Type { standard, coset };
     enum class Algorithm { GS, CT };
 
-protected:
+public:
     static void bit_rev(fr_t* d_out, const fr_t* d_inp,
                         uint32_t lg_domain_size, stream_t& stream)
     {
@@ -46,10 +41,10 @@ protected:
         const uint32_t Z_COUNT = 256 / sizeof(fr_t);
         const uint32_t warpSize = gpu_props(stream).warpSize;
         const uint32_t bsize = Z_COUNT>warpSize ? Z_COUNT : warpSize;
-#ifdef __HIPCC__
-        const uint32_t lg_switch = 17;
+#ifdef __SPPARK_AMD_CDNA__
+        const uint32_t lg_switch = 17;  // CDNA (wave64): no 96KB shared memory trick
 #else
-        const uint32_t lg_switch = 32;
+        const uint32_t lg_switch = 32;  // NVIDIA and RDNA (wave32)
 #endif
 
         if (domain_size <= 1024)
@@ -77,7 +72,9 @@ protected:
 private:
     static void LDE_powers(fr_t* inout, bool innt, bool bitrev,
                            uint32_t lg_dsz, uint32_t lg_blowup,
-                           stream_t& stream)
+                           stream_t& stream,
+                           unsigned int batch_count = 1,
+                           unsigned int col_stride = 0)
     {
         size_t domain_size = (size_t)1 << lg_dsz;
         const uint32_t warpSize = gpu_props(stream).warpSize;
@@ -85,27 +82,41 @@ private:
             NTTParameters::all(innt)[stream].partial_group_gen_powers;
 
         if (domain_size < warpSize)
-            LDE_distribute_powers<<<1, domain_size, 0, stream>>>
-                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers);
+            LDE_distribute_powers<<<dim3(1, batch_count), domain_size, 0, stream>>>
+                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers, col_stride);
         else if (lg_dsz < 32)
-            LDE_distribute_powers<<<domain_size / warpSize, warpSize, 0, stream>>>
-                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers);
+            LDE_distribute_powers<<<dim3(domain_size / warpSize, batch_count), warpSize, 0, stream>>>
+                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers, col_stride);
         else
-            LDE_distribute_powers<<<stream.sm_count(), 1024, 0, stream>>>
-                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers);
+            LDE_distribute_powers<<<dim3(stream.sm_count(), batch_count), 1024, 0, stream>>>
+                                 (inout, lg_dsz, lg_blowup, bitrev, gen_powers, col_stride);
 
         CUDA_OK(cudaGetLastError());
     }
 
     static void CT_NTT(fr_t* d_inout, const int lg_domain_size, bool intt,
                        const NTTParameters& ntt_parameters,
-                       const stream_t& stream)
+                       const stream_t& stream,
+                       unsigned int batch_count = 1,
+                       unsigned int col_stride = 0)
     {
-        CT_launcher params{d_inout, lg_domain_size, intt, ntt_parameters, stream};
+        CT_launcher params{d_inout, lg_domain_size, intt, ntt_parameters, stream,
+                           batch_count, col_stride};
 
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
+#ifdef __HIPCC__
+# if defined(FEATURE_BABY_BEAR) || defined(FEATURE_GOLDILOCKS)
+        // AMD narrow fields: CT 2-pass up to lg=21.
+        // lg=22 radix-11 CT has a HIP compiler bug (wrong results even at Z_COUNT=1).
+        } else if (lg_domain_size <= 21) {
+# else
+        // AMD wide fields: 2-pass up to lg=20 (radix-10 max).
+        } else if (lg_domain_size <= 20) {
+# endif
+#else
         } else if (lg_domain_size <= 18) {
+#endif
             int step = lg_domain_size / 2;
             params.step(step + lg_domain_size % 2);
             params.step(step);
@@ -129,13 +140,27 @@ private:
 
     static void GS_NTT(fr_t* d_inout, const int lg_domain_size, const bool is_intt,
                        const NTTParameters& ntt_parameters,
-                       const stream_t& stream)
+                       const stream_t& stream,
+                       unsigned int batch_count = 1,
+                       unsigned int col_stride = 0)
     {
-        GS_launcher params{d_inout, lg_domain_size, is_intt, ntt_parameters, stream};
+        GS_launcher params{d_inout, lg_domain_size, is_intt, ntt_parameters, stream,
+                           batch_count, col_stride};
 
         if (lg_domain_size <= 10) {
             params.step(lg_domain_size);
+#ifdef __HIPCC__
+# if defined(FEATURE_BABY_BEAR) || defined(FEATURE_GOLDILOCKS)
+        // AMD narrow fields: 2-pass up to lg=21.
+        // lg=22 radix-11 is broken on HIP (VGPR spill corruption at 1024-thread blocks).
+        } else if (lg_domain_size <= 21) {
+# else
+        // AMD wide fields: 2-pass up to lg=20 (radix-10 max).
+        } else if (lg_domain_size <= 20) {
+# endif
+#else
         } else if (lg_domain_size <= 18) {
+#endif
             int step = lg_domain_size / 2;
             params.step(step);
             params.step(step + lg_domain_size % 2);
@@ -160,7 +185,9 @@ private:
 protected:
     static void NTT_internal(fr_t* d_inout, uint32_t lg_domain_size,
                              InputOutputOrder order, Direction direction,
-                             Type type, stream_t& stream)
+                             Type type, stream_t& stream,
+                             unsigned int batch_count = 1,
+                             unsigned int col_stride = 0)
     {
         // Pick an NTT algorithm based on the input order and the desired output
         // order of the data. In certain cases, bit reversal can be avoided which
@@ -194,19 +221,23 @@ protected:
         }
 
         if (!intt && type == Type::coset)
-            LDE_powers(d_inout, intt, bitrev, lg_domain_size, 0, stream);
+            LDE_powers(d_inout, intt, bitrev, lg_domain_size, 0, stream,
+                       batch_count, col_stride);
 
         switch (algorithm) {
             case Algorithm::GS:
-                GS_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream);
+                GS_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream,
+                        batch_count, col_stride);
                 break;
             case Algorithm::CT:
-                CT_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream);
+                CT_NTT(d_inout, lg_domain_size, intt, ntt_parameters, stream,
+                        batch_count, col_stride);
                 break;
         }
 
         if (intt && type == Type::coset)
-            LDE_powers(d_inout, intt, !bitrev, lg_domain_size, 0, stream);
+            LDE_powers(d_inout, intt, !bitrev, lg_domain_size, 0, stream,
+                       batch_count, col_stride);
 
         if (order == InputOutputOrder::RR)
             bit_rev(d_inout, d_inout, lg_domain_size, stream);
@@ -349,10 +380,28 @@ public:
                      stream);
     }
 
+    static void Base_dev_ptr_batch(stream_t& stream, fr_t* d_inout,
+                                   uint32_t lg_domain_size,
+                                   InputOutputOrder order,
+                                   Direction direction, Type type,
+                                   uint32_t poly_count, uint32_t col_stride)
+    {
+        NTT_internal(&d_inout[0], lg_domain_size, order, direction, type,
+                     stream, poly_count, col_stride);
+    }
+
     static void LDE_powers(stream_t& stream, fr_t* d_inout,
                            uint32_t lg_domain_size)
     {
         LDE_powers(d_inout, false, true, lg_domain_size, 0, stream);
+    }
+
+    static void LDE_powers_batch(stream_t& stream, fr_t* d_inout,
+                                 uint32_t lg_domain_size,
+                                 uint32_t poly_count, uint32_t col_stride)
+    {
+        LDE_powers(d_inout, false, true, lg_domain_size, 0, stream,
+                   poly_count, col_stride);
     }
 
     // If d_out and d_in overlap, d_out is expected to encompass d_in and

@@ -66,7 +66,7 @@ fn main() {
         if cfg!(debug_assertions) {
             hipcc.opt_level(2); // no SGPR-s without optimization
         }
-        hipcc.flag("--offload-arch=native,gfx1102,gfx1101,gfx1100,gfx1034,gfx1032,gfx1031,gfx1030,gfx942,gfx90a,gfx908");
+        hipcc.flag("--offload-arch=native,gfx1201,gfx1200,gfx1102,gfx1101,gfx1100,gfx1034,gfx1032,gfx1031,gfx1030,gfx942,gfx90a,gfx908");
         if let Ok(ncpus) = std::thread::available_parallelism() {
             hipcc.flag_if_supported(format!("-parallel-jobs={}", ncpus));
         }
@@ -83,7 +83,7 @@ fn main() {
 
     let mut nvcc = cc::Build::new();
     nvcc.cuda(true);
-    nvcc.flag("-arch=sm_70");
+    nvcc.flag("-arch=sm_120");
     #[cfg(not(target_env = "msvc"))]
     nvcc.flag("-Xcompiler").flag("-Wno-unused-function");
     nvcc.define("TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE", None);

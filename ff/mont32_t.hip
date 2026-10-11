@@ -103,7 +103,7 @@ public:
         }
 
         if (r > 2) {
-            uint32_t red = (val * M0) & ((1<<r) - 1);
+            uint32_t red = reduce_m0(val) & ((1<<r) - 1);
             uint64_t tmp = (uint64_t)MOD * red + val;
 
             val = (uint32_t)(tmp >> r);
@@ -163,6 +163,11 @@ public:
     {   return sel_a ? a : b;   }
 
 private:
+    static inline uint32_t reduce_m0(uint32_t lo)
+    {
+        return lo * M0;
+    }
+
     static inline uint32_t final_sub(uint32_t val, cond_t carry)
     {
         if (N == 32) {
@@ -185,7 +190,7 @@ private:
     inline mont32_t& mul(const mont32_t b)
     {
         uint64_t tmp = (uint64_t)val * b.val;
-        uint32_t red = (uint32_t)tmp * M0;
+        uint32_t red = reduce_m0((uint32_t)tmp);
         cond_t carry;
 
         asm("v_mad_u64_u32 %0, %1, %2, %3, %0" : "+v"(tmp), "=s"(carry)
@@ -197,7 +202,7 @@ private:
 
     inline uint32_t mul_by_1() const
     {
-        uint32_t red = val * M0;
+        uint32_t red = reduce_m0(val);
         uint64_t tmp;
         cond_t carry;
 
@@ -267,7 +272,7 @@ public:
             }
         }
 
-        uint32_t red = ul[0] * M0;
+        uint32_t red = reduce_m0(ul[0]);
         asm("v_mad_u64_u32 %0, %1, %2, %3, %0" : "+v"(acc), "=s"(carry)
                                                : "v"(red), "v"(MOD));
         return final_sub(ul[1], carry);
@@ -308,7 +313,7 @@ public:
             }
         }
 
-        uint32_t red = ul[0] * M0;
+        uint32_t red = reduce_m0(ul[0]);
         asm("v_mad_u64_u32 %0, %1, %2, %3, %0" : "+v"(acc), "=s"(carry)
                                                : "v"(red), "v"(MOD));
         return final_sub(ul[1], carry);
@@ -327,7 +332,7 @@ public:
         if (N == 32)
             ul[1] = final_sub(ul[1], carry);
 
-        uint32_t red = ul[0] * M0;
+        uint32_t red = reduce_m0(ul[0]);
         asm("v_mad_u64_u32 %0, %1, %2, %3, %0" : "+v"(acc), "=s"(carry)
                                                : "v"(red), "v"(MOD));
         return final_sub(ul[1], carry);
@@ -360,7 +365,7 @@ protected:
             #pragma unroll 2
             while (n--) {
                 uint64_t tmp = (uint64_t)s.val * s.val;
-                uint32_t red = (uint32_t)tmp * M0;
+                uint32_t red = reduce_m0((uint32_t)tmp);
                 cond_t carry;
 
                 asm("v_mad_u64_u32 %0, %1, %2, %3, %0" : "+v"(tmp), "=s"(carry)

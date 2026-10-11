@@ -99,8 +99,7 @@ fn main() {
     if nvcc.is_ok() {
         let mut nvcc = cc::Build::new();
         nvcc.cuda(true);
-        nvcc.flag("-arch=sm_80");
-        nvcc.flag("-gencode").flag("arch=compute_70,code=sm_70");
+        nvcc.flag("-arch=sm_120");
         nvcc.flag("-t0");
         if cfg!(feature = "quiet") {
             nvcc.flag("-diag-suppress=177"); // bug in the warning system.
@@ -118,10 +117,26 @@ fn main() {
         if let Some(include) = env::var_os("DEP_SPPARK_ROOT") {
             nvcc.include(include);
         }
-        nvcc.file("cuda/pippenger_inf.cu").compile("blst_cuda_msm");
+        if let Ok(wbits) = env::var("MSM_WBITS") {
+            nvcc.define("MSM_WBITS_OVERRIDE", Some(wbits.as_str()));
+        }
+        if let Ok(nthreads) = env::var("ACCUMULATE_NTHREADS") {
+            nvcc.define("ACCUMULATE_NTHREADS", Some(nthreads.as_str()));
+        }
+        if let Ok(extra_flags) = env::var("NVCC_EXTRA_FLAGS") {
+            for flag in extra_flags.split_whitespace() {
+                nvcc.flag(flag);
+            }
+        }
+        nvcc.file("cuda/pippenger_inf.cu")
+            .file("cuda/bench_preloaded.cu")
+            .compile("blst_cuda_msm");
 
         println!("cargo:rustc-cfg=feature=\"cuda\"");
         println!("cargo:rerun-if-changed=cuda");
         println!("cargo:rerun-if-env-changed=CXXFLAGS");
+        println!("cargo:rerun-if-env-changed=MSM_WBITS");
+        println!("cargo:rerun-if-env-changed=ACCUMULATE_NTHREADS");
+        println!("cargo:rerun-if-env-changed=NVCC_EXTRA_FLAGS");
     }
 }

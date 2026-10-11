@@ -3,21 +3,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 template <int intermediate_mul, class fr_t>
-__launch_bounds__(768, 1) __global__
+#ifdef __HIPCC__
+__launch_bounds__(512, 1)
+#else
+__launch_bounds__(768, 1)
+#endif
+__global__
 void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
              const unsigned int stage, const unsigned int iterations,
              fr_t* d_inout, const fr_t (*d_partial_twiddles)[WINDOW_SIZE],
              const fr_t* d_radix6_twiddles, const fr_t* d_radixX_twiddles,
              const fr_t* d_intermediate_twiddles,
              const unsigned int intermediate_twiddle_shift,
-             const bool is_intt, const fr_t d_domain_size_inverse)
+             const bool is_intt, const fr_t d_domain_size_inverse,
+             const unsigned int col_stride = 0)
 {
+#if defined(__HIPCC__) && !defined(__HIP_DEVICE_COMPILE__)
+#else
 #if (__CUDACC_VER_MAJOR__-0) >= 11 || defined(__clang__)
     __builtin_assume(lg_domain_size <= MAX_LG_DOMAIN_SIZE);
     __builtin_assume(radix <= 10);
     __builtin_assume(iterations <= radix);
     __builtin_assume(stage <= lg_domain_size - iterations);
 #endif
+    if (col_stride) d_inout += (index_t)blockIdx.y * col_stride;
 
     const index_t tid = threadIdx.x + blockDim.x * (index_t)blockIdx.x;
 
@@ -128,6 +137,7 @@ void _CT_NTT(const unsigned int radix, const unsigned int lg_domain_size,
 
     d_inout[idx0] = r0;
     d_inout[idx1] = r1;
+#endif
 }
 
 class CT_launcher {
@@ -138,12 +148,15 @@ class CT_launcher {
     const NTTParameters& ntt_parameters;
     const stream_t& stream;
     int min_radix;
+    unsigned int batch_count;
+    unsigned int col_stride;
 
 public:
     CT_launcher(fr_t* d_ptr, int lg_dsz, bool intt,
-                const NTTParameters& params, const stream_t& s)
+                const NTTParameters& params, const stream_t& s,
+                unsigned int batch = 1, unsigned int stride = 0)
       : d_inout(d_ptr), lg_domain_size(lg_dsz), is_intt(intt), stage(0),
-        ntt_parameters(params), stream(s)
+        ntt_parameters(params), stream(s), batch_count(batch), col_stride(stride)
     {   min_radix = lg2(gpu_props(s).warpSize) + 1;   }
 
     void step(int iterations)
@@ -165,13 +178,13 @@ public:
         unsigned int intermediate_twiddle_shift = 0;
 
         #define NTT_CONFIGURATION \
-                num_blocks, block_size, sizeof(fr_t) * block_size, stream
+                dim3(num_blocks, batch_count), block_size, sizeof(fr_t) * block_size, stream
 
         #define NTT_ARGUMENTS radix, lg_domain_size, stage, iterations, \
                 d_inout, ntt_parameters.partial_twiddles, \
                 ntt_parameters.twiddles[0], ntt_parameters.twiddles[radix-6], \
                 d_intermediate_twiddles, intermediate_twiddle_shift, \
-                is_intt, domain_size_inverse[lg_domain_size]
+                is_intt, domain_size_inverse[lg_domain_size], col_stride
 
         switch (stage) {
         case 0:

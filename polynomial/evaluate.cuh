@@ -141,7 +141,7 @@ void d_evaluate(fr_t ret[/*nx*/], const fr_t x[/*nx*/], int nx, // nx <= N
     bool done = idx >= len;
 
     fr_t prefetch;
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     if (!done)
         prefetch = coeffs[idx];
 #else

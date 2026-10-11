@@ -46,10 +46,10 @@ namespace device {
     };
     static __device__ __constant__ const uint32_t ALT_BN128_m0 = 0xefffffff;
 }
-# if defined(__CUDA_ARCH__) || defined(__HIPCC__)   // device-side field types
+# if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)   // device-side field types
 #  if defined(__CUDA_ARCH__)
 #   include "mont_t.cuh"
-#  elif defined(__HIPCC__)
+#  elif defined(__HIP_DEVICE_COMPILE__)
 #   include "mont_t.hip"
 typedef uint64_t vec256[4];
 #  endif
@@ -73,9 +73,6 @@ struct fr_t : public fr_mont {
     __device__ __forceinline__ fr_t() {}
     __device__ __forceinline__ fr_t(const fr_mont& a) : fr_mont(a) {}
     template<typename... Ts> constexpr fr_t(Ts... a)  : fr_mont{a...} {}
-#  ifdef __HIPCC__
-    __host__   __forceinline__ fr_t(vec256 a)         : fr_mont(a) {}
-#  endif
 };
 
 } // namespace alt_bn128
@@ -83,7 +80,7 @@ struct fr_t : public fr_mont {
 # endif
 #endif
 
-#if !defined(__CUDA_ARCH__) && !defined(__HIPCC__)  // host-side field types
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__)  // host-side field types
 # include <blst_t.hpp>
 
 # if defined(__GNUC__) && !defined(__clang__)

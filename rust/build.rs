@@ -53,7 +53,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=HIPCC");
     let mut hipcc = match env::var("HIPCC") {
         Ok(var) => which::which(var),
-        Err(_) => which::which("hipcc"),
+        Err(_) => {
+            // On Windows, try hipcc.bin.exe first (avoids Perl dependency)
+            if cfg!(target_os = "windows") {
+                which::which("hipcc.bin").or_else(|_| which::which("hipcc"))
+            } else {
+                which::which("hipcc")
+            }
+        }
     };
 
     match (cfg!(feature = "cuda"), cfg!(feature = "rocm")) {

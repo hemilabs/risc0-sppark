@@ -125,7 +125,7 @@ void d_prefix_op(OutPtr out, InPtr inp, size_t len)
     fr_t prefetch;
 
     if (do_prefetch) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         prefetch = identity;
         if (lane_off < len)
             prefetch = inp[lane_off];
@@ -155,7 +155,7 @@ void d_prefix_op(OutPtr out, InPtr inp, size_t len)
             if (top == CHUNK && idx >= len)
                 top = i;
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
             chunk[i] = identity;
             if (i < top)
                 chunk[i] = inp[idx];
@@ -167,7 +167,7 @@ void d_prefix_op(OutPtr out, InPtr inp, size_t len)
         if (do_prefetch) {
             size_t idx = lane_idx + blob_size;
 
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
             prefetch = identity;
             if (idx < len)
                 prefetch = inp[idx];
@@ -176,7 +176,7 @@ void d_prefix_op(OutPtr out, InPtr inp, size_t len)
 #endif
         }
 
-#ifndef __CUDA_ARCH__
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__)
         #pragma unroll
         for (int i = 0; i < CHUNK; i++)
             chunk[i] = fr_t::csel(chunk[i], identity, i < top);
