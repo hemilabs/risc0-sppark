@@ -94,6 +94,9 @@ void _GS_NTT(const unsigned int radix, const unsigned int lg_domain_size,
         noop();
     }
 
+    if (coalesced)
+        __syncthreads();
+
     #pragma unroll 1
     for (unsigned int s = min(iterations, 6u); --s >= 1;) {
         unsigned int laneMask = 1 << (s - 1);
