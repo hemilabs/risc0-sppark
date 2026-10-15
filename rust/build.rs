@@ -207,6 +207,18 @@ fn main() {
         ccmd.cpp(true);
         ccmd.include(&base_dir);
         ccmd.flag("-include").flag("util/cuda2hip.hpp");
+        // hipcc targeting MSVC links no C runtime by default, which leaves the STL's runtime
+        // check expecting the static one; link the one rustc links (/MD, or /MT under
+        // +crt-static), as `cc` does for cl.exe.
+        if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
+            let crt_static = env::var("CARGO_CFG_TARGET_FEATURE")
+                .is_ok_and(|f| f.split(',').any(|f| f == "crt-static"));
+            ccmd.flag(if crt_static {
+                "-fms-runtime-lib=static"
+            } else {
+                "-fms-runtime-lib=dll"
+            });
+        }
         ccmd.file(&all_gpus)
             .compile("sppark_rocm");
         println!("cargo:rustc-cfg=feature=\"rocm\"");
