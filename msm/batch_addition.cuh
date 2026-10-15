@@ -28,6 +28,33 @@
 # error "invalid BATCH_ADD_NSTREAMS"
 #endif
 
+#ifdef SPPARK_NO_COOPERATIVE_LAUNCH
+// A grid-wide barrier for a normal launch, where there is no cooperative one
+// (see util/cuda2hip.hpp): one thread per block arrives on `count`, and the
+// last to arrive starts the next generation, which the others wait for. Like
+// the cooperative launch it stands in for, it needs every block of the grid
+// resident at once, which batch_addition's grid (one block per SM) is.
+__device__ __forceinline__
+static void software_grid_sync(uint32_t* count, volatile uint32_t* generation)
+{
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        uint32_t gen = *generation;
+        __threadfence();
+        if (atomicAdd(count, 1) == gridDim.x - 1) {
+            *count = 0;
+            __threadfence();
+            atomicAdd((uint32_t*)generation, 1);
+        } else {
+            while (*generation == gen)
+                __builtin_amdgcn_s_sleep(1);
+        }
+        __threadfence();
+    }
+    __syncthreads();
+}
+#endif
+
 template<class bucket_t, class affine_h,
          class bucket_h = typename bucket_t::mem_t,
          class affine_t = typename bucket_t::affine_t>
@@ -38,6 +65,10 @@ static void add(bucket_h ret[], const affine_h points[], uint32_t npoints,
 {
     static __device__ uint32_t streams[BATCH_ADD_NSTREAMS];
     uint32_t& current = streams[sid % BATCH_ADD_NSTREAMS];
+#ifdef SPPARK_NO_COOPERATIVE_LAUNCH
+    static __device__ uint32_t barrier_count[BATCH_ADD_NSTREAMS];
+    static __device__ uint32_t barrier_generation[BATCH_ADD_NSTREAMS];
+#endif
 
     const uint32_t degree = bucket_t::degree;
     const uint32_t warp_sz = WARP_SZ / degree;
@@ -114,7 +145,12 @@ static void add(bucket_h ret[], const affine_h points[], uint32_t npoints,
             acc.uadd(down); // .add() triggers spills ... in .shfl_down()
     }
 
+#ifdef SPPARK_NO_COOPERATIVE_LAUNCH
+    software_grid_sync(&barrier_count[sid % BATCH_ADD_NSTREAMS],
+                       &barrier_generation[sid % BATCH_ADD_NSTREAMS]);
+#else
     cooperative_groups::this_grid().sync();
+#endif
 
     if (xid == 0)
         ret[tid/warp_sz] = acc;
