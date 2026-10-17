@@ -483,10 +483,24 @@ void div_by_x_minus_z(fr_t d_inout[], size_t len, const fr_t& z,
     if (gridDim < 3)
         gridDim = 1;
 
+#ifdef SPPARK_NO_COOPERATIVE_LAUNCH
+    // No cooperative launch here (see util/cuda2hip.hpp): one block, whose
+    // grid syncs the kernel skips (every one is under gridDim.x > 1), in a
+    // normal launch.
+    gridDim = 1;
+#endif
+
     size_t sharedSz = sizeof(fr_t) * max(blockDim/WARP_SZ, gridDim);
 
+#ifdef SPPARK_NO_COOPERATIVE_LAUNCH
+    d_div_by_x_minus_z<fr_t, N, rotate, BSZ>
+        <<<gridDim, blockDim, sharedSz, static_cast<cudaStream_t>(s)>>>
+        (d_inout, len, z);
+    CUDA_OK(cudaGetLastError());
+#else
     s.launch_coop(d_div_by_x_minus_z<fr_t, N, rotate, BSZ>,
                   {gridDim, blockDim, sharedSz},
                   d_inout, len, z);
+#endif
 }
 #endif

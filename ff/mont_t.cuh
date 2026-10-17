@@ -40,13 +40,15 @@ public:
     static const uint32_t degree = 1;
     using mem_t = mont_t;
 protected:
+    // Default arguments below name it `mont_t::n`: an unqualified `size_t n=n`
+    // resolves to the parameter itself under nvcc's MSVC-mode C++20 front end.
     static const size_t n = (N+31)/32;
     static_assert((n%2) == 0 && n >= 4, "unsupported bit length");
 private:
     uint32_t even[n];
 
     static inline void mul_n(uint32_t* acc, const uint32_t* a, uint32_t bi,
-                             size_t n=n)
+                             size_t n=mont_t::n)
     {
         for (size_t j = 0; j < n; j += 2)
             asm("mul.lo.u32 %0, %2, %3; mul.hi.u32 %1, %2, %3;"
@@ -55,7 +57,7 @@ private:
     }
 
     static inline void cmad_n(uint32_t* acc, const uint32_t* a, uint32_t bi,
-                              size_t n=n)
+                              size_t n=mont_t::n)
     {
         asm("mad.lo.cc.u32 %0, %2, %3, %0; madc.hi.cc.u32 %1, %2, %3, %1;"
             : "+r"(acc[0]), "+r"(acc[1])
@@ -67,7 +69,7 @@ private:
         // return carry flag
     }
 
-    static inline void cadd_n(uint32_t* acc, const uint32_t* a, size_t n=n)
+    static inline void cadd_n(uint32_t* acc, const uint32_t* a, size_t n=mont_t::n)
     {
         asm("add.cc.u32 %0, %0, %1;" : "+r"(acc[0]) : "r"(a[0]));
         for (size_t i = 1; i < n; i++)
@@ -97,7 +99,7 @@ private:
 
     private:
         static inline void mad_row(uint32_t* odd, uint32_t* even,
-                                   const uint32_t* a, uint32_t bi, size_t n=n)
+                                   const uint32_t* a, uint32_t bi, size_t n=mont_t::n)
         {
             cmad_n(odd, a+1, bi, n-2);
             asm("madc.lo.cc.u32 %0, %2, %3, 0; madc.hi.u32 %1, %2, %3, 0;"
