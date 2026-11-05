@@ -15,7 +15,10 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let mut base_dir = manifest_dir.join("sppark");
-    if !base_dir.exists() {
+    // `is_dir`, not `exists`: in a git checkout the `sppark` -> `..` symlink is
+    // written as a plain text file wherever symlinks aren't supported (e.g. cargo's
+    // libgit2 checkout on Windows), and that file exists.
+    if !base_dir.is_dir() {
         // Reach out to .., which is the root of the sppark repo.
         // Use an absolute path to avoid issues with relative paths
         // being treated as strings by `cc` and getting concatenated
@@ -204,6 +207,18 @@ fn main() {
         ccmd.cpp(true);
         ccmd.include(&base_dir);
         ccmd.flag("-include").flag("util/cuda2hip.hpp");
+        // hipcc targeting MSVC links no C runtime by default, which leaves the STL's runtime
+        // check expecting the static one; link the one rustc links (/MD, or /MT under
+        // +crt-static), as `cc` does for cl.exe.
+        if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
+            let crt_static = env::var("CARGO_CFG_TARGET_FEATURE")
+                .is_ok_and(|f| f.split(',').any(|f| f == "crt-static"));
+            ccmd.flag(if crt_static {
+                "-fms-runtime-lib=static"
+            } else {
+                "-fms-runtime-lib=dll"
+            });
+        }
         ccmd.file(&all_gpus)
             .compile("sppark_rocm");
         println!("cargo:rustc-cfg=feature=\"rocm\"");

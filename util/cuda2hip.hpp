@@ -5,6 +5,17 @@
 #ifdef __HIPCC__
 
 #pragma clang diagnostic ignored "-Wdeprecated-pragma"
+
+/*
+ * HIP on Windows has no cooperative launch: hipDeviceAttributeCooperativeLaunch
+ * is 0, hipLaunchCooperativeKernel fails, and a grid sync in a normal launch
+ * hangs. Code that needs a grid-wide barrier checks this macro (see
+ * msm/batch_addition.cuh), and devices are not required to support it
+ * (util/all_gpus.cpp).
+ */
+#if defined(_WIN32) && !defined(SPPARK_NO_COOPERATIVE_LAUNCH)
+# define SPPARK_NO_COOPERATIVE_LAUNCH
+#endif
 #ifndef __AMDGCN_WAVEFRONT_SIZE
 # ifdef __GFX9__
 #  define __AMDGCN_WAVEFRONT_SIZE 64
